@@ -1,0 +1,10 @@
+{
+  "description": "Streamline design workflows with a comprehensive library of visual styles and UI components tailored for efficient and consistent interface creation.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

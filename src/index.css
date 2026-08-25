@@ -1,0 +1,35 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
+
+* {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  --ink: #1A1A1A;
+  --accent: #2D4A3E;
+  --surface: #F5F4F2;
+  --border: #D8D3CC;
+}
+
+html {
+  background: #ffffff;
+  color: #1A1A1A;
+}
+
+::-webkit-scrollbar {
+  width: 0px;
+  background: transparent;
+}
+
+input, textarea, select {
+  outline: none;
+}
+
+input:focus, textarea:focus, select:focus {
+  box-shadow: 0 0 0 2px rgba(45, 74, 62, 0.25);
+}
