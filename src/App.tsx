@@ -21,6 +21,43 @@ type Screen =
   | 'creators'
   | 'login'
   | 'my-orders'
+  | 'creator-dashboard'
+  | 'creator-request'
+  | 'creator-order'
+
+type UserRole = 'customer' | 'creator'
+
+interface SessionUser {
+  role: UserRole
+  name: string
+  email: string
+}
+
+type LoginIntent = 'checkout' | 'my-orders' | null
+
+type CustomWorkflowStatus =
+  | 'pending-creator-review'
+  | 'modification-requested'
+  | 'customer-response-sent'
+  | 'in-progress'
+  | 'awaiting-customer-review'
+  | 'changes-requested'
+  | 'progress-approved'
+  | 'completed'
+  | 'shipped'
+
+interface CustomWorkflow {
+  status: CustomWorkflowStatus
+  creatorModificationNote?: string
+  customerModificationResponse?: string
+  customerModificationUploads?: UploadedImage[]
+  progressImage?: string
+  progressImageName?: string
+  progressNote?: string
+  customerFeedback?: string
+  carrier?: string
+  trackingNumber?: string
+}
 
 interface UploadedImage {
   key: number
@@ -64,6 +101,7 @@ interface OrderItem {
   unitPrice: number
   customized: boolean
   customization?: CustomizationSnapshot
+  workflow?: CustomWorkflow
 }
 
 interface OrderRecord {
@@ -75,7 +113,6 @@ interface OrderRecord {
   delivery: DeliveryMethod
   checkout: CheckoutForm
   placedLabel: string
-  status: 'Awaiting Review' | 'Order Confirmed'
 }
 
 interface AppConfig {
@@ -107,6 +144,7 @@ const BORDER = '#D8D3CC'
 const INK = '#1A1A1A'
 const MUTED = '#6B6560'
 const ERROR = '#c0392b'
+const PAGE_BG = '#F8F6FA'
 
 // ─── Price engine ─────────────────────────────────────────────────────────────
 
@@ -176,7 +214,7 @@ const PRODUCT_CARDS = [
   { id: 1, title: 'Custom Floral Painting', creator: 'Elena Marsh', price: '€89', priceNum: 89, category: 'Painting', style: 'Botanical', img: floralPaintingMain, tag: 'Popular' },
   { id: 2, title: 'Abstract Landscape Print', creator: 'Tobias Venn', price: '€65', priceNum: 65, category: 'Print', style: 'Abstract', img: 'https://images.unsplash.com/photo-1536924940846-227afb31e2a5?w=420&h=360&fit=crop&auto=format', tag: undefined },
   { id: 3, title: 'Botanical Watercolor', creator: 'Sara Okonkwo', price: '€74', priceNum: 74, category: 'Watercolor', style: 'Botanical', img: 'https://images.unsplash.com/photo-1750922179530-30508825848c?w=420&h=360&fit=crop&auto=format', tag: 'New' },
-  { id: 4, title: 'Portrait Study Art Print', creator: 'Marcus Bell', price: '€110', priceNum: 110, category: 'Print', style: 'Realistic', img: 'https://images.unsplash.com/photo-1593472807861-5bb884af28f6?w=420&h=360&fit=crop&auto=format', tag: undefined },
+  { id: 4, title: 'Portrait Pencil Drawing', creator: 'Marcus Bell', price: '€110', priceNum: 110, category: 'Drawing', style: 'Realistic', img: 'https://images.unsplash.com/photo-1593472807861-5bb884af28f6?w=420&h=360&fit=crop&auto=format', tag: undefined },
   { id: 5, title: 'City Skyline Art Print', creator: 'Yuki Tanaka', price: '€58', priceNum: 58, category: 'Print', style: 'Minimalist', img: 'https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?w=420&h=360&fit=crop&auto=format', tag: undefined },
   { id: 6, title: 'Dog Portrait Art Print', creator: 'Clara Roth', price: '€99', priceNum: 99, category: 'Print', style: 'Realistic', img: 'https://images.unsplash.com/photo-1587300003388-59208cc962cb?w=420&h=360&fit=crop&auto=format', tag: undefined },
 ]
@@ -256,7 +294,7 @@ const PRODUCT_DETAILS: Record<number, ProductDetail> = {
       'https://images.unsplash.com/photo-1582201957417-24546f2e643d?w=200&h=250&fit=crop&auto=format',
     ],
     creatorImg: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=80&h=80&fit=crop&auto=format',
-    description: 'A contemplative portrait study reproduced as a fine art print with soft tonal contrast and expressive mark-making. This standard catalog piece highlights Marcus Bell’s careful attention to gaze, composition and atmosphere.',
+    description: 'A hand-drawn graphite portrait study with soft tonal transitions and expressive pencil work. The piece focuses on facial expression, gaze and natural shading, presented as an original drawing on quality art paper.',
     customizable: [],
     delivery: '16–22 business days',
     isFullFlow: false,
@@ -341,6 +379,52 @@ function getItemsSubtotal(items: OrderItem[]): number {
 function getCustomizationLabel(item: OrderItem): string {
   const custom = item.customization
   return custom ? `${custom.size} · ${custom.material} · ${custom.frame} · ${custom.palette} · ${custom.orientation}` : ''
+}
+
+const WORKFLOW_LABELS: Record<CustomWorkflowStatus, string> = {
+  'pending-creator-review': 'Pending Creator Review',
+  'modification-requested': 'Modification Requested',
+  'customer-response-sent': 'Response Sent',
+  'in-progress': 'In Progress',
+  'awaiting-customer-review': 'Awaiting Review',
+  'changes-requested': 'Changes Requested',
+  'progress-approved': 'Progress Approved',
+  completed: 'Artwork Completed',
+  shipped: 'Shipped',
+}
+
+const INCOMING_WORKFLOW_STATUSES: CustomWorkflowStatus[] = ['pending-creator-review', 'modification-requested', 'customer-response-sent']
+const ACTIVE_WORKFLOW_STATUSES: CustomWorkflowStatus[] = ['in-progress', 'awaiting-customer-review', 'changes-requested', 'progress-approved', 'completed', 'shipped']
+
+function isElenaCustomizedItem(item: OrderItem): boolean {
+  return item.creator === 'Elena Marsh' && item.customized && Boolean(item.customization)
+}
+
+function getCustomWorkflow(item: OrderItem): CustomWorkflow {
+  return item.workflow ?? { status: 'pending-creator-review' }
+}
+
+function getOrderDisplayStatus(order: OrderRecord): string {
+  const customItem = order.items.find((item) => item.customized && item.customization)
+  return customItem ? WORKFLOW_LABELS[getCustomWorkflow(customItem).status] : 'Order Confirmed'
+}
+
+function getWorkflowTone(status: CustomWorkflowStatus): { bg: string; color: string; border: string } {
+  if (status === 'pending-creator-review' || status === 'awaiting-customer-review' || status === 'modification-requested' || status === 'customer-response-sent') {
+    return { bg: '#fef8e7', color: '#8a6800', border: '#e8d98a' }
+  }
+  if (status === 'changes-requested') return { bg: '#fdf0ef', color: ERROR, border: '#e8b4b0' }
+  if (status === 'in-progress' || status === 'progress-approved') return { bg: '#edf2ff', color: '#3b5bdb', border: '#bac8ff' }
+  return { bg: '#e8f0ec', color: ACCENT, border: '#b2d0c4' }
+}
+
+interface CreatorTask {
+  order: OrderRecord
+  item: OrderItem
+}
+
+function getElenaTasks(orders: OrderRecord[]): CreatorTask[] {
+  return orders.flatMap((order) => order.items.filter(isElenaCustomizedItem).map((item) => ({ order, item })))
 }
 
 // ─── Shared UI primitives ─────────────────────────────────────────────────────
@@ -487,8 +571,9 @@ function ConfigSection({ label, children, last }: { label: string; children: Rea
 
 // ─── Header ───────────────────────────────────────────────────────────────────
 
-function Header({ screen, cartCount, wishlistCount, loggedIn, onLogout, onNavigate }: { screen: Screen; cartCount: number; wishlistCount: number; loggedIn: boolean; onLogout: () => void; onNavigate: (s: Screen) => void }) {
+function Header({ screen, cartCount, wishlistCount, session, onLogout, onNavigate }: { screen: Screen; cartCount: number; wishlistCount: number; session: SessionUser | null; onLogout: () => void; onNavigate: (s: Screen) => void }) {
   const [accountOpen, setAccountOpen] = useState(false)
+  const isCreator = session?.role === 'creator'
   const navLink = (label: string, target: Screen) => (
     <button
       onClick={() => onNavigate(target)}
@@ -503,44 +588,52 @@ function Header({ screen, cartCount, wishlistCount, loggedIn, onLogout, onNaviga
         </button>
         <nav style={{ display: 'flex', gap: 28, marginLeft: 8 }}>
           {navLink('Browse Products', 'browse')}
-          {navLink('Creators', 'creators')}
-          {navLink('My Orders', loggedIn ? 'my-orders' : 'login')}
+          {isCreator ? navLink('Creator Dashboard', 'creator-dashboard') : (
+            <>
+              {navLink('Creators', 'creators')}
+              {navLink('My Orders', 'my-orders')}
+            </>
+          )}
         </nav>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 20 }}>
-          <button
-            aria-label="Open Wishlist"
-            onClick={() => onNavigate('wishlist')}
-            style={{ position: 'relative', background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: screen === 'wishlist' ? ACCENT : INK, transition: 'color 0.15s' }}
-          >
-            <HeartIcon filled={wishlistCount > 0} />
-            {wishlistCount > 0 && (
-              <span style={{ position: 'absolute', top: -2, right: -4, background: ACCENT, color: '#fff', borderRadius: '50%', width: 16, height: 16, fontSize: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600 }}>{wishlistCount}</span>
-            )}
-          </button>
-          <button aria-label={`Open Cart${cartCount > 0 ? ` (${cartCount} items)` : ''}`} onClick={() => onNavigate('cart')} style={{ position: 'relative', background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: INK }}>
-            <CartIcon />
-            {cartCount > 0 && (
-              <span style={{ position: 'absolute', top: -2, right: -4, background: ACCENT, color: '#fff', borderRadius: '50%', width: 16, height: 16, fontSize: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600 }}>{cartCount}</span>
-            )}
-          </button>
+          {!isCreator && (
+            <>
+              <button
+                aria-label="Open Wishlist"
+                onClick={() => onNavigate('wishlist')}
+                style={{ position: 'relative', background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: screen === 'wishlist' ? ACCENT : INK, transition: 'color 0.15s' }}
+              >
+                <HeartIcon filled={wishlistCount > 0} />
+                {wishlistCount > 0 && (
+                  <span style={{ position: 'absolute', top: -2, right: -4, background: ACCENT, color: '#fff', borderRadius: '50%', width: 16, height: 16, fontSize: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600 }}>{wishlistCount}</span>
+                )}
+              </button>
+              <button aria-label={`Open Cart${cartCount > 0 ? ` (${cartCount} items)` : ''}`} onClick={() => onNavigate('cart')} style={{ position: 'relative', background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: INK }}>
+                <CartIcon />
+                {cartCount > 0 && (
+                  <span style={{ position: 'absolute', top: -2, right: -4, background: ACCENT, color: '#fff', borderRadius: '50%', width: 16, height: 16, fontSize: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600 }}>{cartCount}</span>
+                )}
+              </button>
+            </>
+          )}
           {/* Account button with dropdown */}
           <div style={{ position: 'relative' }}>
             <button
-              aria-label={loggedIn ? 'Open Account Menu' : 'Open Account'}
+              aria-label={session ? 'Open Account Menu' : 'Open Account'}
               onClick={() => setAccountOpen((v) => !v)}
-              style={{ background: loggedIn ? ACCENT : 'none', border: loggedIn ? 'none' : 'none', borderRadius: '50%', cursor: 'pointer', padding: loggedIn ? 0 : 4, width: loggedIn ? 32 : 'auto', height: loggedIn ? 32 : 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', color: loggedIn ? '#fff' : INK }}
+              style={{ background: session ? ACCENT : 'none', border: 'none', borderRadius: '50%', cursor: 'pointer', padding: session ? 0 : 4, width: session ? 32 : 'auto', height: session ? 32 : 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', color: session ? '#fff' : INK }}
             >
-              {loggedIn ? <span style={{ fontSize: 13, fontWeight: 700 }}>T</span> : <AccountIcon />}
+              {session ? <span style={{ fontSize: 13, fontWeight: 700 }}>{session.name.charAt(0)}</span> : <AccountIcon />}
             </button>
             {accountOpen && (
               <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, boxShadow: '0 4px 20px rgba(0,0,0,0.1)', minWidth: 200, overflow: 'hidden', zIndex: 100 }}>
-                {loggedIn ? (
+                {session ? (
                   <>
                     <div style={{ padding: '14px 16px', borderBottom: `1px solid ${BORDER}` }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: INK }}>Test User</div>
-                      <div style={{ fontSize: 12, color: MUTED }}>test@artian.com</div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: INK }}>{session.name}</div>
+                      <div style={{ fontSize: 12, color: MUTED }}>{session.email}</div>
                     </div>
-                    <button onClick={() => { onNavigate('my-orders'); setAccountOpen(false) }} style={{ width: '100%', textAlign: 'left', padding: '12px 16px', fontSize: 13, color: INK, background: 'none', border: 'none', cursor: 'pointer', borderBottom: `1px solid ${BORDER}` }}>My Orders</button>
+                    <button onClick={() => { onNavigate(isCreator ? 'creator-dashboard' : 'my-orders'); setAccountOpen(false) }} style={{ width: '100%', textAlign: 'left', padding: '12px 16px', fontSize: 13, color: INK, background: 'none', border: 'none', cursor: 'pointer', borderBottom: `1px solid ${BORDER}` }}>{isCreator ? 'Creator Dashboard' : 'My Orders'}</button>
                     <button onClick={() => { onLogout(); setAccountOpen(false) }} style={{ width: '100%', textAlign: 'left', padding: '12px 16px', fontSize: 13, color: ERROR, background: 'none', border: 'none', cursor: 'pointer' }}>Log Out</button>
                   </>
                 ) : (
@@ -1214,10 +1307,12 @@ function CartScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig; setCfg: SetAp
 
 // ─── Screen 7: Checkout ───────────────────────────────────────────────────────
 
-function CheckoutScreen({ cfg, setCfg, onNavigate }: {
+function CheckoutScreen({ cfg, setCfg, onNavigate, session, onRequireCustomer }: {
   cfg: AppConfig
   setCfg: SetAppConfig
   onNavigate: (s: Screen) => void
+  session: SessionUser | null
+  onRequireCustomer: () => void
 }) {
   const [errors, setErrors] = useState<Partial<Record<keyof CheckoutForm, string>>>({})
   const firstErrorRef = useRef<HTMLDivElement>(null)
@@ -1235,6 +1330,11 @@ function CheckoutScreen({ cfg, setCfg, onNavigate }: {
   const validateEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)
 
   const handleSubmit = () => {
+    if (session?.role !== 'customer') {
+      onRequireCustomer()
+      return
+    }
+
     const next: typeof errors = {}
     const { email, name, address1, city, postal } = cfg.checkout
     if (!email.trim()) next.email = 'Required'
@@ -1256,16 +1356,18 @@ function CheckoutScreen({ cfg, setCfg, onNavigate }: {
     }
 
     const orderNumber = `#ART-${20481 + cfg.orders.length}`
+    const orderedItems = cartItems.map((item) => item.customized
+      ? { ...item, workflow: { status: 'pending-creator-review' as const } }
+      : item)
     const order: OrderRecord = {
       orderNumber,
-      items: cartItems,
+      items: orderedItems,
       subtotal,
       shipping,
       total,
       delivery: cfg.delivery,
       checkout: { ...cfg.checkout },
       placedLabel: 'Placed today',
-      status: cartItems.some((item) => item.customized) ? 'Awaiting Review' : 'Order Confirmed',
     }
 
     setCfg((prev) => ({
@@ -1423,7 +1525,7 @@ function ConfirmationScreen({ order, onNavigate, onViewOrder }: { order?: OrderR
       </div>
       <h1 style={{ fontSize: 30, fontWeight: 700, color: INK, marginBottom: 12, letterSpacing: '-0.4px' }}>Order Confirmed</h1>
       <p style={{ fontSize: 15, color: MUTED, lineHeight: 1.7, marginBottom: 32, maxWidth: 440, margin: '0 auto 32px' }}>
-        {hasCustomizedItem ? "Your order was placed successfully. Open it to review Elena Marsh's latest floral artwork progress update." : 'Your order was placed successfully and is ready to view in My Orders.'}
+        {hasCustomizedItem ? "Your order was placed successfully. Elena Marsh will review the customized floral artwork request before work begins." : 'Your order was placed successfully and is ready to view in My Orders.'}
       </p>
 
       <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden', marginBottom: 40, textAlign: 'left' }}>
@@ -1475,8 +1577,6 @@ function ConfirmationScreen({ order, onNavigate, onViewOrder }: { order?: OrderR
 
 const STATUS_STEPS = ['Request Received', 'Creator Review', 'In Progress', 'Review', 'Shipped']
 
-type OrderStage = 'feasibility-pending' | 'feasibility-simulating' | 'feasibility-responded' | 'in-progress' | 'review'
-
 function StandardOrderStatusScreen({ order, onNavigate }: { order: OrderRecord; onNavigate: (s: Screen) => void }) {
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '48px 40px 80px' }}>
@@ -1526,32 +1626,15 @@ function StandardOrderStatusScreen({ order, onNavigate }: { order: OrderRecord; 
   )
 }
 
-function OrderStatusScreen({ order, onNavigate }: { order?: OrderRecord; onNavigate: (s: Screen) => void }) {
-  const [stage, setStage] = useState<OrderStage>('review')
-  const [action, setAction] = useState<null | 'approved' | 'changes'>(null)
-  const [changeNote, setChangeNote] = useState('')
-  const [changeError, setChangeError] = useState('')
-  const [submitted, setSubmitted] = useState(false)
-  const [shipped, setShipped] = useState(false)
-
+function OrderStatusScreen({ order, onNavigate, onUpdateWorkflow }: { order?: OrderRecord; onNavigate: (s: Screen) => void; onUpdateWorkflow: (orderNumber: string, update: Partial<CustomWorkflow>) => void }) {
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [feedback, setFeedback] = useState('')
+  const [feedbackError, setFeedbackError] = useState('')
+  const [clarificationResponse, setClarificationResponse] = useState('')
+  const [clarificationUploads, setClarificationUploads] = useState<UploadedImage[]>([])
+  const [clarificationError, setClarificationError] = useState('')
+  const clarificationKeyRef = useRef(Date.now())
   const customItem = order?.items.find((item) => item.customized && item.customization)
-
-  const handleSimulate = () => {
-    setStage('feasibility-simulating')
-    setTimeout(() => setStage('feasibility-responded'), 1800)
-  }
-
-  const handleSendFeedback = () => {
-    if (changeNote.trim().length < 10) { setChangeError('Please enter at least 10 characters so the requested change is clear.'); return }
-    setChangeError('')
-    setSubmitted(true)
-  }
-
-  const handleCancelFeedback = () => {
-    setAction(null)
-    setChangeNote('')
-    setChangeError('')
-  }
 
   if (!order) {
     return (
@@ -1565,33 +1648,51 @@ function OrderStatusScreen({ order, onNavigate }: { order?: OrderRecord; onNavig
   if (!customItem?.customization) return <StandardOrderStatusScreen order={order} onNavigate={onNavigate} />
 
   const cfg = customItem.customization
-  const total = order.total
+  const workflow = getCustomWorkflow(customItem)
+  const tone = getWorkflowTone(workflow.status)
+  const stageIndex = workflow.status === 'shipped'
+    ? 4
+    : workflow.status === 'pending-creator-review' || workflow.status === 'modification-requested' || workflow.status === 'customer-response-sent'
+      ? 1
+      : workflow.status === 'in-progress'
+        ? 2
+        : 3
 
-  // stepper index: 0=Request Received, 1=Creator Review, 2=In Progress, 3=Review, 4=Shipped
-  const stepDone = (i: number) => {
-    if (shipped) return true
-    if (stage === 'feasibility-pending' || stage === 'feasibility-simulating' || stage === 'feasibility-responded') return i < 1
-    if (stage === 'in-progress') return i < 2
-    if (stage === 'review') return action === 'approved' ? i < 4 : i < 3
-    return false
-  }
-  const stepCurrent = (i: number) => {
-    if (shipped) return false
-    if ((stage === 'feasibility-pending' || stage === 'feasibility-simulating' || stage === 'feasibility-responded') && i === 1) return true
-    if (stage === 'in-progress' && i === 2) return true
-    if (stage === 'review' && action !== 'approved' && i === 3) return true
-    return false
+  const submitFeedback = () => {
+    if (feedback.trim().length < 10) {
+      setFeedbackError('Please enter at least 10 characters so the requested change is clear.')
+      return
+    }
+    onUpdateWorkflow(order.orderNumber, { status: 'changes-requested', customerFeedback: feedback })
+    setFeedbackOpen(false)
+    setFeedbackError('')
   }
 
-  const statusBadge = () => {
-    if (shipped) return { bg: '#e8f0ec', color: ACCENT, border: '#b2d0c4', dot: ACCENT, label: 'Shipped' }
-    if (action === 'approved') return { bg: '#edf2ff', color: '#3b5bdb', border: '#bac8ff', dot: '#3b5bdb', label: 'Progress Approved' }
-    if (stage === 'review') return { bg: '#fef8e7', color: '#8a6800', border: '#e8d98a', dot: '#c9a800', label: 'Awaiting Review' }
-    if (stage === 'in-progress') return { bg: '#edf2ff', color: '#3b5bdb', border: '#bac8ff', dot: '#3b5bdb', label: 'In Progress' }
-    if (stage === 'feasibility-responded') return { bg: '#e8f0ec', color: ACCENT, border: '#b2d0c4', dot: ACCENT, label: 'Creator Responded' }
-    return { bg: '#fef8e7', color: '#8a6800', border: '#e8d98a', dot: '#c9a800', label: 'Pending Creator Review' }
+  const handleClarificationFiles = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []).filter((file) => file.type.startsWith('image/'))
+    const loadedImages = (await Promise.all(files.map((file) => new Promise<UploadedImage | null>((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve({ key: clarificationKeyRef.current++, src: reader.result as string, name: file.name })
+      reader.onerror = () => resolve(null)
+      reader.readAsDataURL(file)
+    })))).filter((image): image is UploadedImage => image !== null)
+    setClarificationUploads((current) => [...current, ...loadedImages])
+    event.target.value = ''
   }
-  const badge = statusBadge()
+
+  const submitClarification = () => {
+    const response = clarificationResponse.trim()
+    if (response.length < 10) {
+      setClarificationError('Please enter at least 10 characters so your response is clear.')
+      return
+    }
+    onUpdateWorkflow(order.orderNumber, {
+      status: 'customer-response-sent',
+      customerModificationResponse: response,
+      customerModificationUploads: clarificationUploads,
+    })
+    setClarificationError('')
+  }
 
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto', padding: '48px 40px 80px' }}>
@@ -1599,9 +1700,9 @@ function OrderStatusScreen({ order, onNavigate }: { order?: OrderRecord; onNavig
         <div>
           <div style={{ fontSize: 13, color: MUTED, marginBottom: 6 }}>Order {order.orderNumber}</div>
           <h1 style={{ fontSize: 26, fontWeight: 700, color: INK, letterSpacing: '-0.3px', marginBottom: 10 }}>Order Status</h1>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: badge.bg, color: badge.color, border: `1px solid ${badge.border}`, borderRadius: 20, padding: '4px 12px', fontSize: 12, fontWeight: 600 }}>
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: badge.dot, display: 'inline-block' }} />
-            {badge.label}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: tone.bg, color: tone.color, border: `1px solid ${tone.border}`, borderRadius: 20, padding: '4px 12px', fontSize: 12, fontWeight: 600 }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: tone.color, display: 'inline-block' }} />
+            {WORKFLOW_LABELS[workflow.status]}
           </span>
         </div>
       </div>
@@ -1610,8 +1711,8 @@ function OrderStatusScreen({ order, onNavigate }: { order?: OrderRecord; onNavig
       <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '28px 32px', marginBottom: 32 }}>
         <div style={{ display: 'flex', alignItems: 'center' }}>
           {STATUS_STEPS.map((step, i) => {
-            const done = stepDone(i)
-            const current = stepCurrent(i)
+            const done = i < stageIndex
+            const current = i === stageIndex
             return (
               <div key={step} style={{ display: 'flex', alignItems: 'center', flex: i < STATUS_STEPS.length - 1 ? 1 : undefined }}>
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
@@ -1620,7 +1721,7 @@ function OrderStatusScreen({ order, onNavigate }: { order?: OrderRecord; onNavig
                   </div>
                   <span style={{ fontSize: 11, fontWeight: current ? 700 : done ? 500 : 400, color: done || current ? INK : MUTED, whiteSpace: 'nowrap', textAlign: 'center' }}>{step}</span>
                 </div>
-                {i < STATUS_STEPS.length - 1 && <div style={{ flex: 1, height: 2, background: stepDone(i) && stepDone(i + 1) ? ACCENT : BORDER, margin: '0 0 20px', minWidth: 32 }} />}
+                {i < STATUS_STEPS.length - 1 && <div style={{ flex: 1, height: 2, background: i < stageIndex ? ACCENT : BORDER, margin: '0 0 20px', minWidth: 32 }} />}
               </div>
             )
           })}
@@ -1630,219 +1731,96 @@ function OrderStatusScreen({ order, onNavigate }: { order?: OrderRecord; onNavig
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 40 }}>
         <div>
 
-          {/* ── Stage: Feasibility pending / simulating ── */}
-          {(stage === 'feasibility-pending' || stage === 'feasibility-simulating') && (
-            <>
-              <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden', marginBottom: 24 }}>
-                <div style={{ padding: '18px 24px', borderBottom: `1px solid ${BORDER}` }}>
-                  <h3 style={{ fontSize: 14, fontWeight: 600, color: INK }}>Customized Artwork Request</h3>
-                </div>
-                <div style={{ padding: '24px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-                    <img src={customItem.image} alt={customItem.title} style={{ width: 56, height: 68, objectFit: 'cover', borderRadius: 6, flexShrink: 0 }} />
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: INK, marginBottom: 4 }}>{customItem.title}</div>
-                      <div style={{ fontSize: 13, color: MUTED }}>{cfg.size} · {cfg.material} · {cfg.frame}</div>
-                      <div style={{ fontSize: 13, color: MUTED }}>{cfg.palette} palette · {cfg.orientation}</div>
-                    </div>
-                  </div>
-                  {cfg.instruction && (
-                    <div style={{ background: SURFACE, borderRadius: 6, padding: '12px 14px', fontSize: 13, color: MUTED, lineHeight: 1.6, marginBottom: 20 }}>
-                      <span style={{ fontWeight: 600, color: INK }}>Your instructions: </span>{cfg.instruction}
-                    </div>
-                  )}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: MUTED }}>
-                    <svg width="15" height="15" fill="none" stroke={MUTED} strokeWidth={1.6} viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
-                    Your request has been received. Elena Marsh is reviewing the customized artwork details.
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ border: `1px dashed ${BORDER}`, borderRadius: 8, padding: '28px 24px', textAlign: 'center', background: SURFACE }}>
-                {stage === 'feasibility-pending' ? (
-                  <>
-                    <div style={{ fontSize: 14, color: INK, fontWeight: 500, marginBottom: 6 }}>Waiting for creator response</div>
-                    <div style={{ fontSize: 13, color: MUTED, marginBottom: 24, lineHeight: 1.6 }}>Elena Marsh typically responds within 24 hours to confirm whether the customized artwork can be fulfilled as described.</div>
-                    <SecondaryBtn onClick={handleSimulate}>Simulate Creator Response</SecondaryBtn>
-                    <div style={{ fontSize: 11, color: MUTED, marginTop: 10 }}>For prototype demonstration only</div>
-                  </>
-                ) : (
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, color: MUTED }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /><path d="M9 12l2 2 4-4" style={{ opacity: 0 }} /><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.9s" repeatCount="indefinite" /></svg>
-                    <span style={{ fontSize: 14 }}>Fetching response from Elena Marsh…</span>
-                  </div>
-                )}
-              </div>
-            </>
+          {workflow.status === 'pending-creator-review' && (
+            <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px', background: '#fff' }}>
+              <h3 style={{ fontSize: 15, fontWeight: 600, color: INK, marginBottom: 12 }}>Pending Creator Review</h3>
+              <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: 0 }}>Your customized request has been received. Elena Marsh has not accepted it yet.</p>
+            </div>
           )}
 
-          {/* ── Stage: Creator responded ── */}
-          {stage === 'feasibility-responded' && (
-            <>
-              <div style={{ border: `1.5px solid ${ACCENT}`, borderRadius: 8, overflow: 'hidden', marginBottom: 24 }}>
-                <div style={{ padding: '14px 20px', background: '#f0f5f2', borderBottom: `1px solid #b2d0c4`, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: ACCENT }} />
-                  <span style={{ fontSize: 13, fontWeight: 600, color: ACCENT }}>New message from your creator</span>
-                </div>
-                <div style={{ padding: '24px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-                    <img src={CREATOR_IMG} alt="Elena Marsh" style={{ width: 44, height: 44, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: INK }}>Elena Marsh</div>
-                      <div style={{ fontSize: 12, color: MUTED }}>Today at 09:14 · Creator Review</div>
-                    </div>
-                  </div>
-                  <p style={{ fontSize: 14, color: INK, lineHeight: 1.75, margin: '0 0 16px' }}>
-                    Hi! Thank you for your customized artwork request — I've reviewed the details and I'm happy to confirm this floral direction works beautifully.
-                  </p>
-                  <p style={{ fontSize: 14, color: INK, lineHeight: 1.75, margin: '0 0 16px' }}>
-                    The {cfg.size} format in {cfg.material} with a {cfg.frame.toLowerCase()} works very well with the {cfg.orientation.toLowerCase()} orientation. I can preserve the recognizable flower arrangement while refining the background and color balance in an expressive painterly style.
-                  </p>
-                  <p style={{ fontSize: 14, color: INK, lineHeight: 1.75, margin: 0 }}>
-                    I'll begin with a preliminary sketch once you confirm. Estimated completion is {order.delivery === 'express' ? '7–10' : '14–21'} business days from today. Looking forward to working on this!
-                  </p>
-                </div>
+          {workflow.status === 'modification-requested' && (
+            <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px', background: '#fff' }}>
+              <h3 style={{ fontSize: 15, fontWeight: 600, color: INK, marginBottom: 12 }}>Creator requested additional information</h3>
+              <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: '0 0 18px' }}>Elena Marsh needs more information before accepting this customized artwork request.</p>
+              {workflow.creatorModificationNote && <div style={{ background: SURFACE, borderRadius: 6, padding: '14px 16px', fontSize: 14, color: INK, lineHeight: 1.65, marginBottom: 20 }}><strong>Elena's request:</strong> {workflow.creatorModificationNote}</div>}
+              <div style={{ fontSize: 14, fontWeight: 600, color: INK, marginBottom: 8 }}>Your response</div>
+              <textarea value={clarificationResponse} onChange={(event) => { setClarificationResponse(event.target.value); setClarificationError('') }} rows={5} placeholder="Add the details Elena needs to review your request." style={{ width: '100%', boxSizing: 'border-box', border: `1px solid ${clarificationError ? ERROR : BORDER}`, borderRadius: 6, padding: '11px 12px', fontFamily: 'Inter, sans-serif', fontSize: 14, color: INK, lineHeight: 1.6, resize: 'vertical' }} />
+              {clarificationError && <div style={{ color: ERROR, fontSize: 12, marginTop: 6 }}>{clarificationError}</div>}
+              <div style={{ marginTop: 16 }}>
+                <label style={{ display: 'inline-flex', alignItems: 'center', border: `1px solid ${BORDER}`, borderRadius: 6, padding: '8px 14px', fontSize: 13, color: INK, cursor: 'pointer', background: '#fff' }}>Add supporting images<input type="file" accept="image/*" multiple onChange={handleClarificationFiles} style={{ display: 'none' }} /></label>
+                <div style={{ fontSize: 11, color: MUTED, marginTop: 6 }}>Optional supplemental references for this clarification.</div>
               </div>
-
-              <div style={{ display: 'flex', gap: 12 }}>
-                <PrimaryBtn onClick={() => setStage('in-progress')}>Confirm & Let Creator Begin</PrimaryBtn>
-                <SecondaryBtn onClick={() => onNavigate('cart')}>Edit Customized Order</SecondaryBtn>
-              </div>
-            </>
+              {clarificationUploads.length > 0 && <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>{clarificationUploads.map((upload, index) => <div key={upload.key} style={{ position: 'relative' }}><img src={upload.src} alt={`Supplemental reference ${index + 1}`} style={{ width: 92, height: 92, objectFit: 'cover', borderRadius: 6, border: `1px solid ${BORDER}` }} /><button type="button" aria-label={`Remove ${upload.name}`} onClick={() => setClarificationUploads((uploads) => uploads.filter((candidate) => candidate.key !== upload.key))} style={{ position: 'absolute', top: 4, right: 4, width: 22, height: 22, borderRadius: '50%', border: 0, background: 'rgba(31, 35, 33, 0.78)', color: '#fff', cursor: 'pointer', lineHeight: 1 }}>×</button></div>)}</div>}
+              <div style={{ marginTop: 18 }}><PrimaryBtn onClick={submitClarification}>Send Response</PrimaryBtn></div>
+            </div>
           )}
 
-          {/* ── Stage: In Progress ── */}
-          {stage === 'in-progress' && (
-            <>
-              <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden', marginBottom: 24 }}>
-                <div style={{ padding: '18px 24px', borderBottom: `1px solid ${BORDER}` }}>
-                  <h3 style={{ fontSize: 14, fontWeight: 600, color: INK }}>Artwork in Progress</h3>
-                </div>
-                <div style={{ padding: '24px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-                    <img src={CREATOR_IMG} alt="Elena Marsh" style={{ width: 40, height: 40, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: INK }}>Elena Marsh</div>
-                      <div style={{ fontSize: 12, color: MUTED }}>Today at 09:28 · In Progress</div>
-                    </div>
-                  </div>
-                  <p style={{ fontSize: 14, color: INK, lineHeight: 1.75, margin: '0 0 20px' }}>
-                    Your customized floral painting is in progress. I'll share a preview once the initial sketch and first color layers are ready for your review.
-                  </p>
-                  <div style={{ background: SURFACE, borderRadius: 6, padding: '12px 14px', fontSize: 13, color: MUTED, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <svg width="14" height="14" fill="none" stroke={MUTED} strokeWidth={1.8} viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
-                    A progress update with preview image will be available within 3–5 business days.
-                  </div>
-                </div>
-              </div>
-              <PrimaryBtn onClick={() => setStage('review')}>View Progress Update</PrimaryBtn>
-              <div style={{ fontSize: 11, color: MUTED, marginTop: 8 }}>For prototype demonstration only</div>
-            </>
+          {workflow.status === 'customer-response-sent' && (
+            <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px', background: '#fff' }}>
+              <h3 style={{ fontSize: 15, fontWeight: 600, color: INK, marginBottom: 10 }}>Response Sent</h3>
+              <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: '0 0 18px' }}>Elena has received your additional information. Your request is now awaiting creator review.</p>
+              {workflow.creatorModificationNote && <div style={{ background: SURFACE, borderRadius: 6, padding: '14px 16px', fontSize: 14, color: INK, lineHeight: 1.65, marginBottom: 12 }}><strong>Elena's request:</strong> {workflow.creatorModificationNote}</div>}
+              <div style={{ border: `1px solid ${BORDER}`, borderRadius: 6, padding: '14px 16px', fontSize: 14, color: INK, lineHeight: 1.65 }}><strong>Your response:</strong> {workflow.customerModificationResponse}</div>
+              {Boolean(workflow.customerModificationUploads?.length) && <div style={{ marginTop: 18 }}><div style={{ fontSize: 12, fontWeight: 600, color: INK, marginBottom: 10 }}>Supplemental images</div><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>{workflow.customerModificationUploads?.map((upload, index) => <img key={upload.key} src={upload.src} alt={`Supplemental reference ${index + 1}`} style={{ width: 104, height: 104, objectFit: 'cover', borderRadius: 6, border: `1px solid ${BORDER}` }} />)}</div></div>}
+            </div>
           )}
 
-          {/* ── Stage: Review ── */}
-          {stage === 'review' && (
+          {workflow.status === 'in-progress' && (
+            <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px', background: '#fff' }}>
+              <h3 style={{ fontSize: 15, fontWeight: 600, color: INK, marginBottom: 10 }}>Artwork in Progress</h3>
+              <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: 0 }}>Elena Marsh accepted your request and is working on the customized floral painting. A progress image will appear here after the creator submits an update.</p>
+            </div>
+          )}
+
+          {workflow.status === 'awaiting-customer-review' && (
             <>
-              <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden', marginBottom: 24 }}>
-                <div style={{ padding: '18px 24px', borderBottom: `1px solid ${BORDER}` }}>
-                  <h3 style={{ fontSize: 14, fontWeight: 600, color: INK }}>Artwork Progress</h3>
-                </div>
-                <div style={{ position: 'relative' }}>
-                  <img src={PROGRESS_IMG} alt="Floral artwork in progress" style={{ width: '100%', height: 320, objectFit: 'cover', display: 'block' }} />
-                  <div style={{ position: 'absolute', top: 12, left: 12, background: 'rgba(255,255,255,0.92)', borderRadius: 4, padding: '4px 10px', fontSize: 11, fontWeight: 600, color: INK }}>Work in Progress Preview</div>
-                </div>
+              <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden', marginBottom: 24, background: '#fff' }}>
+                <div style={{ padding: '18px 24px', borderBottom: `1px solid ${BORDER}` }}><h3 style={{ fontSize: 14, fontWeight: 600, color: INK }}>Artwork Progress</h3></div>
+                {workflow.progressImage && <img src={workflow.progressImage} alt="Floral artwork progress submitted by Elena Marsh" style={{ width: '100%', height: 320, objectFit: 'cover', display: 'block' }} />}
               </div>
-
-              <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden', marginBottom: 28 }}>
-                <div style={{ padding: '18px 24px', borderBottom: `1px solid ${BORDER}` }}>
-                  <h3 style={{ fontSize: 14, fontWeight: 600, color: INK }}>Creator Update</h3>
-                </div>
-                <div style={{ padding: '20px 24px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-                    <img src={CREATOR_IMG} alt="Elena Marsh" style={{ width: 40, height: 40, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: INK }}>Elena Marsh</div>
-                      <div style={{ fontSize: 12, color: MUTED }}>14 August 2026 at 11:32</div>
-                    </div>
-                  </div>
-                  <p style={{ fontSize: 14, color: INK, lineHeight: 1.7, margin: 0 }}>Hi! I've completed the initial floral sketch and laid in the first color layers. I've kept the flower arrangement recognizable while developing the soft background, harmonious palette and visible brushwork you requested. Please review the progress image and let me know if you'd like any adjustments before I proceed to the final details.</p>
-                </div>
+              <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '20px 24px', marginBottom: 24, background: '#fff' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}><img src={CREATOR_IMG} alt="Elena Marsh" style={{ width: 40, height: 40, borderRadius: '50%', objectFit: 'cover' }} /><div><div style={{ fontSize: 14, fontWeight: 600, color: INK }}>Elena Marsh</div><div style={{ fontSize: 12, color: MUTED }}>Creator progress update</div></div></div>
+                <p style={{ fontSize: 14, color: INK, lineHeight: 1.7, margin: 0 }}>{workflow.progressNote}</p>
               </div>
-
-              {action === null && (
+              {!feedbackOpen ? (
                 <div style={{ display: 'flex', gap: 12 }}>
-                  <PrimaryBtn onClick={() => setAction('approved')}>Approve Progress</PrimaryBtn>
-                  <SecondaryBtn onClick={() => setAction('changes')}>Request Changes</SecondaryBtn>
+                  <PrimaryBtn onClick={() => onUpdateWorkflow(order.orderNumber, { status: 'progress-approved' })}>Approve Progress</PrimaryBtn>
+                  <SecondaryBtn onClick={() => setFeedbackOpen(true)}>Request Changes</SecondaryBtn>
                 </div>
-              )}
-
-              {action === 'approved' && !shipped && (
-                <div>
-                  <div style={{ border: `1.5px solid #bac8ff`, borderRadius: 8, padding: '20px 24px', background: '#edf2ff', display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16 }}>
-                    <div style={{ width: 36, height: 36, borderRadius: '50%', background: '#3b5bdb', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><CheckIcon size={18} /></div>
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: INK, marginBottom: 2 }}>Progress Approved</div>
-                      <div style={{ fontSize: 13, color: MUTED }}>Your approval has been recorded in this prototype. Elena Marsh can continue with the final details; shipping remains pending.</div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {shipped && (
-                <div style={{ border: `1.5px solid ${ACCENT}`, borderRadius: 8, padding: '24px', background: '#f0f5f2' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 18 }}>
-                    <div style={{ width: 40, height: 40, borderRadius: '50%', background: ACCENT, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                      <svg width="20" height="20" fill="none" stroke="#fff" strokeWidth={2} viewBox="0 0 24 24"><rect x="1" y="3" width="15" height="13" rx="1" /><path d="M16 8h4l3 3v5h-7V8z" /><circle cx="5.5" cy="18.5" r="2.5" /><circle cx="18.5" cy="18.5" r="2.5" /></svg>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 15, fontWeight: 700, color: INK, marginBottom: 3 }}>Order Shipped!</div>
-                      <div style={{ fontSize: 13, color: MUTED }}>Your artwork is on its way. Estimated delivery in {order.delivery === 'express' ? '7–10' : '14–21'} business days.</div>
-                    </div>
-                  </div>
-                  <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 6, padding: '14px 18px' }}>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: MUTED, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: 8 }}>Tracking</div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div>
-                        <div style={{ fontSize: 14, fontWeight: 600, color: INK, fontFamily: 'monospace', letterSpacing: '0.5px', marginBottom: 2 }}>ART-TRK-884291</div>
-                        <div style={{ fontSize: 12, color: MUTED }}>{order.delivery === 'express' ? 'DHL Express' : 'Austrian Post'} · In transit</div>
-                      </div>
-                      <SecondaryBtn small onClick={() => {}}>Track Package</SecondaryBtn>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {action === 'changes' && !submitted && (
-                <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '20px 24px' }}>
+              ) : (
+                <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '20px 24px', background: '#fff' }}>
                   <div style={{ fontSize: 14, fontWeight: 600, color: INK, marginBottom: 8 }}>Describe the changes you'd like</div>
-                  <textarea
-                    value={changeNote}
-                    onChange={(e) => { setChangeNote(e.target.value); if (changeError) setChangeError('') }}
-                    rows={4}
-                    placeholder="e.g. Could you soften the background and give the darker flowers slightly more emphasis?"
-                    style={{ width: '100%', border: `1px solid ${changeError ? ERROR : BORDER}`, borderRadius: 6, padding: '10px 12px', fontSize: 14, color: INK, lineHeight: 1.6, resize: 'vertical', background: '#fff', boxSizing: 'border-box', fontFamily: 'Inter, sans-serif', marginBottom: changeError ? 6 : 14 }}
-                  />
-                  {changeError && <div style={{ fontSize: 12, color: ERROR, marginBottom: 14 }}>{changeError}</div>}
-                  <div style={{ display: 'flex', gap: 10 }}>
-                    <PrimaryBtn small onClick={handleSendFeedback}>Send Feedback</PrimaryBtn>
-                    <SecondaryBtn small onClick={handleCancelFeedback}>Cancel</SecondaryBtn>
-                  </div>
-                </div>
-              )}
-
-              {action === 'changes' && submitted && (
-                <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '20px 24px', background: SURFACE, display: 'flex', alignItems: 'center', gap: 14 }}>
-                  <div style={{ width: 36, height: 36, borderRadius: '50%', background: SURFACE, border: `1.5px solid ${BORDER}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    <svg width="16" height="16" fill="none" stroke={MUTED} strokeWidth={1.8} viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" /></svg>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: INK, marginBottom: 2 }}>Change Request Sent</div>
-                    <div style={{ fontSize: 13, color: MUTED }}>Your feedback has been recorded in this prototype for Elena Marsh to review.</div>
-                  </div>
+                  <textarea value={feedback} onChange={(e) => { setFeedback(e.target.value); setFeedbackError('') }} rows={4} placeholder="e.g. Please soften the background and give the darker flowers slightly more emphasis." style={{ width: '100%', border: `1px solid ${feedbackError ? ERROR : BORDER}`, borderRadius: 6, padding: '10px 12px', fontSize: 14, color: INK, lineHeight: 1.6, resize: 'vertical', boxSizing: 'border-box', fontFamily: 'Inter, sans-serif', marginBottom: feedbackError ? 6 : 14 }} />
+                  {feedbackError && <div style={{ fontSize: 12, color: ERROR, marginBottom: 14 }}>{feedbackError}</div>}
+                  <div style={{ display: 'flex', gap: 10 }}><PrimaryBtn small onClick={submitFeedback}>Send Feedback</PrimaryBtn><SecondaryBtn small onClick={() => { setFeedbackOpen(false); setFeedback(''); setFeedbackError('') }}>Cancel</SecondaryBtn></div>
                 </div>
               )}
             </>
           )}
+
+          {workflow.status === 'changes-requested' && (
+            <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px', background: '#fff' }}>
+              <h3 style={{ fontSize: 15, fontWeight: 600, color: INK, marginBottom: 10 }}>Changes Requested</h3>
+              <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: '0 0 16px' }}>Your feedback was sent. Elena Marsh is preparing an updated version.</p>
+              <div style={{ background: SURFACE, borderRadius: 6, padding: '14px 16px', fontSize: 14, color: INK, lineHeight: 1.65 }}><strong>Your feedback:</strong> {workflow.customerFeedback}</div>
+            </div>
+          )}
+
+          {workflow.status === 'progress-approved' && <WorkflowMessage title="Progress Approved" body="Your approval has been recorded. Elena Marsh can complete the artwork; shipping is still pending." />}
+          {workflow.status === 'completed' && <WorkflowMessage title="Artwork Completed" body="Elena Marsh marked the artwork as complete. It is being prepared for shipment and tracking is pending." />}
+          {workflow.status === 'shipped' && (
+            <div style={{ border: `1.5px solid ${ACCENT}`, borderRadius: 8, padding: '24px', background: '#f0f5f2' }}>
+              <h3 style={{ fontSize: 15, fontWeight: 700, color: INK, marginBottom: 8 }}>Shipped</h3>
+              <p style={{ fontSize: 14, color: MUTED, margin: '0 0 18px' }}>Your customized artwork has been dispatched.</p>
+              <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 6, padding: '14px 18px' }}><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}><span style={{ color: MUTED }}>Carrier</span><strong>{workflow.carrier}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}><span style={{ color: MUTED }}>Tracking number</span><strong style={{ fontFamily: 'monospace' }}>{workflow.trackingNumber}</strong></div></div>
+            </div>
+          )}
+
+          <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '20px 24px', marginTop: 24, background: '#fff' }}>
+            <h3 style={{ fontSize: 14, fontWeight: 600, color: INK, marginBottom: 14 }}>Your Configuration</h3>
+            {[['Size', cfg.size], ['Material', cfg.material], ['Frame', cfg.frame], ['Color palette', cfg.palette], ['Orientation', cfg.orientation], ['Reference images', String(cfg.uploads.length)]].map(([label, value]) => <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 8 }}><span style={{ color: MUTED }}>{label}</span><span style={{ fontWeight: 500 }}>{value}</span></div>)}
+            {cfg.instruction && <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 12, marginTop: 12, fontSize: 13, color: MUTED, lineHeight: 1.6 }}><strong style={{ color: INK }}>Instructions:</strong> {cfg.instruction}</div>}
+          </div>
 
         </div>
 
@@ -1866,7 +1844,7 @@ function OrderStatusScreen({ order, onNavigate }: { order?: OrderRecord; onNavig
               <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 14 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 8 }}>
                   <span style={{ color: MUTED }}>Total paid</span>
-                  <span style={{ fontWeight: 700, color: INK }}>€{total}</span>
+                  <span style={{ fontWeight: 700, color: INK }}>€{order.total}</span>
                 </div>
               </div>
             </div>
@@ -1877,11 +1855,12 @@ function OrderStatusScreen({ order, onNavigate }: { order?: OrderRecord; onNavig
               <h3 style={{ fontSize: 14, fontWeight: 600, color: INK }}>Shipping & Tracking</h3>
             </div>
             <div style={{ padding: '18px 24px' }}>
-              {!shipped && <div style={{ fontSize: 13, color: MUTED, marginBottom: 12 }}>Tracking information will be provided once your artwork has been approved and dispatched.</div>}
-              {shipped && (
+              {workflow.status !== 'shipped' && <div style={{ fontSize: 13, color: MUTED, marginBottom: 12 }}>Tracking information will be provided once your artwork has been completed and dispatched.</div>}
+              {workflow.status === 'shipped' && (
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: MUTED, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: 4 }}>Tracking number</div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: INK, fontFamily: 'monospace', letterSpacing: '0.4px' }}>ART-TRK-884291</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: INK, fontFamily: 'monospace', letterSpacing: '0.4px' }}>{workflow.trackingNumber}</div>
+                  <div style={{ fontSize: 12, color: MUTED, marginTop: 3 }}>{workflow.carrier}</div>
                 </div>
               )}
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
@@ -1898,6 +1877,10 @@ function OrderStatusScreen({ order, onNavigate }: { order?: OrderRecord; onNavig
       </div>
     </div>
   )
+}
+
+function WorkflowMessage({ title, body }: { title: string; body: string }) {
+  return <div style={{ border: `1.5px solid #bac8ff`, borderRadius: 8, padding: '22px 24px', background: '#edf2ff' }}><h3 style={{ fontSize: 15, fontWeight: 600, color: INK, marginBottom: 7 }}>{title}</h3><p style={{ fontSize: 14, color: MUTED, lineHeight: 1.65, margin: 0 }}>{body}</p></div>
 }
 
 // ─── Creator data ─────────────────────────────────────────────────────────────
@@ -1952,9 +1935,9 @@ const CREATORS = [
     id: 4,
     name: 'Marcus Bell',
     location: 'Amsterdam, Netherlands',
-    specialty: 'Charcoal Drawing',
-    tags: ['Charcoal', 'Drawing', 'Portrait'],
-    bio: 'Marcus trained in classical drawing at the Rijksakademie and brings a rigorous tonal discipline to every piece. His charcoal portraits are characterized by their quiet authority — confident mark-making, controlled gradation, and a strong sense of psychological presence. His Artian collection focuses on carefully produced portrait studies and art prints.',
+    specialty: 'Graphite Drawing',
+    tags: ['Graphite', 'Drawing', 'Portrait'],
+    bio: 'Marcus trained in classical drawing at the Rijksakademie and brings a rigorous tonal discipline to every piece. His pencil portraits are characterized by confident mark-making, controlled gradation and a strong sense of presence. His Artian collection focuses on original graphite portrait studies on quality art paper.',
     avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=120&h=120&fit=crop&auto=format',
     studioImg: 'https://images.unsplash.com/photo-1593472807861-5bb884af28f6?w=600&h=400&fit=crop&auto=format',
     productId: 4,
@@ -2011,7 +1994,7 @@ function CreatorsScreen({ onNavigate, onSelectProduct }: { onNavigate: (s: Scree
       (activeSpecialty === 'Painting' && c.tags.includes('Acrylic')) ||
       (activeSpecialty === 'Printmaking' && c.tags.includes('Print')) ||
       (activeSpecialty === 'Watercolor' && c.tags.includes('Watercolor')) ||
-      (activeSpecialty === 'Drawing' && c.tags.includes('Charcoal')) ||
+      (activeSpecialty === 'Drawing' && c.tags.includes('Drawing')) ||
       (activeSpecialty === 'Illustration' && c.tags.includes('Illustration'))
     return matchSearch && matchSpec
   })
@@ -2255,12 +2238,167 @@ function WishlistScreen({ cfg, setCfg, onNavigate, onSelectProduct }: { cfg: App
   )
 }
 
+// ─── Creator workflow screens ────────────────────────────────────────────────
+
+function WorkflowBadge({ status, label }: { status: CustomWorkflowStatus; label?: string }) {
+  const tone = getWorkflowTone(status)
+  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: tone.bg, color: tone.color, border: `1px solid ${tone.border}`, borderRadius: 20, padding: '3px 10px', fontSize: 11, fontWeight: 600 }}><span style={{ width: 5, height: 5, borderRadius: '50%', background: tone.color }} />{label ?? WORKFLOW_LABELS[status]}</span>
+}
+
+function CreatorDashboardScreen({ orders, onOpenTask }: { orders: OrderRecord[]; onOpenTask: (orderNumber: string, target: 'creator-request' | 'creator-order') => void }) {
+  const tasks = getElenaTasks(orders)
+  const incoming = tasks.filter(({ item }) => INCOMING_WORKFLOW_STATUSES.includes(getCustomWorkflow(item).status))
+  const active = tasks.filter(({ item }) => ACTIVE_WORKFLOW_STATUSES.includes(getCustomWorkflow(item).status))
+  const activeCount = active.filter(({ item }) => getCustomWorkflow(item).status !== 'shipped').length
+  const awaitingCount = tasks.filter(({ item }) => getCustomWorkflow(item).status === 'awaiting-customer-review').length
+
+  return (
+    <div style={{ maxWidth: 1050, margin: '0 auto', padding: '48px 40px 80px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 34 }}>
+        <img src={CREATOR_IMG} alt="Elena Marsh" style={{ width: 60, height: 60, borderRadius: '50%', objectFit: 'cover', border: `2px solid ${BORDER}` }} />
+        <div><div style={{ fontSize: 12, color: ACCENT, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Creator Dashboard</div><h1 style={{ fontSize: 28, color: INK, margin: '3px 0' }}>Elena Marsh</h1><div style={{ fontSize: 13, color: MUTED }}>Creator · Floral Painting</div></div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 42 }}>
+        {[['Incoming Requests', incoming.length], ['Active Orders', activeCount], ['Awaiting Customer Review', awaitingCount]].map(([label, value]) => <div key={String(label)} style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '18px 20px' }}><div style={{ fontSize: 24, fontWeight: 700, color: INK, marginBottom: 4 }}>{value}</div><div style={{ fontSize: 12, color: MUTED }}>{label}</div></div>)}
+      </div>
+
+      <CreatorTaskSection title="Incoming Requests" empty="No incoming customized requests." tasks={incoming} actionLabel="View Request" onOpen={(number) => onOpenTask(number, 'creator-request')} />
+      <div style={{ marginTop: 40 }}><CreatorTaskSection title="Active Orders" empty="No active customized orders." tasks={active} actionLabel="Open Order" onOpen={(number) => onOpenTask(number, 'creator-order')} /></div>
+    </div>
+  )
+}
+
+function CreatorTaskSection({ title, empty, tasks, actionLabel, onOpen }: { title: string; empty: string; tasks: CreatorTask[]; actionLabel: string; onOpen: (orderNumber: string) => void }) {
+  return (
+    <section>
+      <h2 style={{ fontSize: 18, color: INK, marginBottom: 16 }}>{title}</h2>
+      {tasks.length === 0 ? <div style={{ background: '#fff', border: `1px dashed ${BORDER}`, borderRadius: 8, padding: '30px 24px', color: MUTED, fontSize: 14 }}>{empty}</div> : <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>{tasks.slice().reverse().map(({ order, item }) => {
+        const workflow = getCustomWorkflow(item)
+        return <div key={`${order.orderNumber}-${item.productId}`} style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '20px 22px', display: 'flex', alignItems: 'center', gap: 18 }}>
+          <img src={item.image} alt={item.title} style={{ width: 56, height: 68, objectFit: 'cover', borderRadius: 5 }} />
+          <div style={{ flex: 1 }}><div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 5, flexWrap: 'wrap' }}><strong style={{ fontSize: 14, color: INK }}>{item.title}</strong><WorkflowBadge status={workflow.status} label={workflow.status === 'customer-response-sent' ? 'Customer Responded' : undefined} /></div><div style={{ fontSize: 12, color: MUTED, marginBottom: 3 }}>{order.orderNumber} · {order.checkout.name || 'Test User'} · {order.placedLabel}</div><div style={{ fontSize: 12, color: MUTED }}>{getCustomizationLabel(item)}</div></div>
+          <PrimaryBtn small onClick={() => onOpen(order.orderNumber)}>{actionLabel}</PrimaryBtn>
+        </div>
+      })}</div>}
+    </section>
+  )
+}
+
+function CreatorRequestScreen({ task, onNavigate, onUpdateWorkflow }: { task?: CreatorTask; onNavigate: (s: Screen) => void; onUpdateWorkflow: (orderNumber: string, update: Partial<CustomWorkflow>) => void }) {
+  const [showModification, setShowModification] = useState(false)
+  const [note, setNote] = useState('')
+  const [error, setError] = useState('')
+  if (!task?.item.customization) return <CreatorMissingState onNavigate={onNavigate} />
+  const { order, item } = task
+  const custom = item.customization!
+  const workflow = getCustomWorkflow(item)
+
+  const requestModification = () => {
+    if (note.trim().length < 10) { setError('Please enter at least 10 characters so the customer knows what is needed.'); return }
+    onUpdateWorkflow(order.orderNumber, { status: 'modification-requested', creatorModificationNote: note.trim(), customerModificationResponse: undefined, customerModificationUploads: undefined })
+    setShowModification(false)
+    setError('')
+  }
+
+  return (
+    <div style={{ maxWidth: 980, margin: '0 auto', padding: '48px 40px 80px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 30 }}><div><div style={{ fontSize: 13, color: MUTED, marginBottom: 6 }}>{order.orderNumber}</div><h1 style={{ fontSize: 26, color: INK, margin: '0 0 10px' }}>Customized Request Details</h1><WorkflowBadge status={workflow.status} /></div></div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 32 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '22px 24px' }}><h3 style={{ fontSize: 14, color: INK, marginBottom: 16 }}>Customer & Order</h3>{[['Customer', order.checkout.name || 'Test User'], ['Email', order.checkout.email], ['Placed', order.placedLabel], ['Delivery', order.delivery === 'express' ? 'Express Delivery' : 'Standard Delivery'], ['Quantity', String(item.quantity)], ['Item price', `€${item.unitPrice * item.quantity}`]].map(([label, value]) => <DetailRow key={label} label={label} value={value} />)}</div>
+          <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '22px 24px' }}><h3 style={{ fontSize: 14, color: INK, marginBottom: 16 }}>Customization</h3>{[['Size', custom.size], ['Material', custom.material], ['Frame', custom.frame], ['Color palette', custom.palette], ['Orientation', custom.orientation]].map(([label, value]) => <DetailRow key={label} label={label} value={value} />)}</div>
+          <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '22px 24px' }}><h3 style={{ fontSize: 14, color: INK, marginBottom: 14 }}>Reference Images</h3><div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>{custom.uploads.map((upload, index) => <div key={upload.key}><img src={upload.src} alt={`Customer reference ${index + 1}`} style={{ width: 116, height: 116, objectFit: 'cover', borderRadius: 6, border: `1px solid ${BORDER}` }} /><div style={{ fontSize: 11, color: MUTED, marginTop: 4, maxWidth: 116, overflow: 'hidden', textOverflow: 'ellipsis' }}>{upload.name}</div></div>)}</div></div>
+          <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '22px 24px' }}><h3 style={{ fontSize: 14, color: INK, marginBottom: 10 }}>Customer Instructions</h3><p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: 0 }}>{custom.instruction || 'No additional instructions.'}</p></div>
+          {workflow.status === 'customer-response-sent' && <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '22px 24px' }}><h3 style={{ fontSize: 14, color: INK, marginBottom: 16 }}>Clarification Exchange</h3><div style={{ marginBottom: 16 }}><div style={{ fontSize: 12, fontWeight: 600, color: MUTED, marginBottom: 6 }}>Your clarification request</div><p style={{ fontSize: 14, color: INK, lineHeight: 1.7, margin: 0 }}>{workflow.creatorModificationNote}</p></div><div><div style={{ fontSize: 12, fontWeight: 600, color: MUTED, marginBottom: 6 }}>Customer response</div><p style={{ fontSize: 14, color: INK, lineHeight: 1.7, margin: 0 }}>{workflow.customerModificationResponse}</p></div>{Boolean(workflow.customerModificationUploads?.length) && <div style={{ marginTop: 18 }}><div style={{ fontSize: 12, fontWeight: 600, color: MUTED, marginBottom: 10 }}>Supplemental images</div><div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>{workflow.customerModificationUploads?.map((upload, index) => <div key={upload.key}><img src={upload.src} alt={`Customer supplemental reference ${index + 1}`} style={{ width: 116, height: 116, objectFit: 'cover', borderRadius: 6, border: `1px solid ${BORDER}` }} /><div style={{ fontSize: 11, color: MUTED, marginTop: 4, maxWidth: 116, overflow: 'hidden', textOverflow: 'ellipsis' }}>{upload.name}</div></div>)}</div></div>}</div>}
+        </div>
+        <div>
+          <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '22px', position: 'sticky', top: 96 }}><img src={item.image} alt={item.title} style={{ width: '100%', height: 190, objectFit: 'cover', borderRadius: 6, marginBottom: 16 }} /><div style={{ fontSize: 15, fontWeight: 600, color: INK, marginBottom: 4 }}>{item.title}</div><div style={{ fontSize: 12, color: MUTED, marginBottom: 20 }}>{getCustomizationLabel(item)}</div>
+            {workflow.creatorModificationNote && <div style={{ background: '#fef8e7', border: '1px solid #e8d98a', borderRadius: 6, padding: '12px', fontSize: 12, color: INK, lineHeight: 1.6, marginBottom: 16 }}><strong>Requested modification:</strong> {workflow.creatorModificationNote}</div>}
+            <PrimaryBtn fullWidth onClick={() => { onUpdateWorkflow(order.orderNumber, { status: 'in-progress' }); onNavigate('creator-order') }}>Accept Request</PrimaryBtn>
+            <div style={{ marginTop: 10 }}><SecondaryBtn fullWidth onClick={() => setShowModification(true)}>Request Modification</SecondaryBtn></div>
+          </div>
+        </div>
+      </div>
+      {showModification && <div style={{ maxWidth: 620, marginTop: 24, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '20px 24px' }}><h3 style={{ fontSize: 14, color: INK, marginBottom: 8 }}>What additional information is needed?</h3><textarea value={note} onChange={(e) => { setNote(e.target.value); setError('') }} rows={4} placeholder="Explain what the customer should clarify or provide." style={{ width: '100%', boxSizing: 'border-box', border: `1px solid ${error ? ERROR : BORDER}`, borderRadius: 6, padding: 12, fontFamily: 'Inter, sans-serif', fontSize: 14, resize: 'vertical' }} />{error && <div style={{ fontSize: 12, color: ERROR, marginTop: 5 }}>{error}</div>}<div style={{ display: 'flex', gap: 10, marginTop: 14 }}><PrimaryBtn small onClick={requestModification}>Send Request</PrimaryBtn><SecondaryBtn small onClick={() => { setShowModification(false); setNote(''); setError('') }}>Cancel</SecondaryBtn></div></div>}
+    </div>
+  )
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return <div style={{ display: 'flex', justifyContent: 'space-between', gap: 18, fontSize: 13, marginBottom: 9 }}><span style={{ color: MUTED }}>{label}</span><span style={{ color: INK, fontWeight: 500, textAlign: 'right' }}>{value}</span></div>
+}
+
+function CreatorOrderScreen({ task, onNavigate, onUpdateWorkflow }: { task?: CreatorTask; onNavigate: (s: Screen) => void; onUpdateWorkflow: (orderNumber: string, update: Partial<CustomWorkflow>) => void }) {
+  const item = task?.item
+  const order = task?.order
+  const workflow = item ? getCustomWorkflow(item) : undefined
+  const [progressImage, setProgressImage] = useState(workflow?.progressImage ?? '')
+  const [progressImageName, setProgressImageName] = useState(workflow?.progressImageName ?? '')
+  const [progressNote, setProgressNote] = useState(workflow?.progressNote ?? '')
+  const [progressError, setProgressError] = useState('')
+  const [carrier, setCarrier] = useState(workflow?.carrier ?? '')
+  const [trackingNumber, setTrackingNumber] = useState(workflow?.trackingNumber ?? '')
+  const [shippingError, setShippingError] = useState('')
+  if (!item?.customization || !order || !workflow) return <CreatorMissingState onNavigate={onNavigate} />
+
+  const handleProgressFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !file.type.startsWith('image/')) { setProgressError('Please choose an image file.'); return }
+    const reader = new FileReader()
+    reader.onload = () => { setProgressImage(reader.result as string); setProgressImageName(file.name); setProgressError('') }
+    reader.readAsDataURL(file)
+  }
+  const submitProgress = () => {
+    if (!progressImage) { setProgressError('Add a progress image before submitting.'); return }
+    if (progressNote.trim().length < 10) { setProgressError('Enter a progress note of at least 10 characters.'); return }
+    onUpdateWorkflow(order.orderNumber, { status: 'awaiting-customer-review', progressImage, progressImageName, progressNote })
+    setProgressError('')
+  }
+  const markShipped = () => {
+    if (!carrier.trim() || !trackingNumber.trim()) { setShippingError('Carrier and tracking number are both required.'); return }
+    onUpdateWorkflow(order.orderNumber, { status: 'shipped', carrier, trackingNumber })
+    setShippingError('')
+  }
+
+  const canSubmitProgress = workflow.status === 'in-progress' || workflow.status === 'changes-requested'
+  return (
+    <div style={{ maxWidth: 980, margin: '0 auto', padding: '48px 40px 80px' }}>
+      <div style={{ marginBottom: 30 }}><div style={{ fontSize: 13, color: MUTED, marginBottom: 5 }}>{order.orderNumber} · {order.checkout.name || 'Test User'}</div><h1 style={{ fontSize: 26, color: INK, margin: '0 0 10px' }}>Creator Order</h1><WorkflowBadge status={workflow.status} /></div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 32 }}>
+        <div>
+          {workflow.status === 'changes-requested' && <div style={{ background: '#fdf0ef', border: '1px solid #e8b4b0', borderRadius: 8, padding: '20px 22px', marginBottom: 20 }}><h3 style={{ fontSize: 15, color: ERROR, marginBottom: 8 }}>Changes Requested</h3><p style={{ fontSize: 14, color: INK, lineHeight: 1.65, margin: 0 }}>{workflow.customerFeedback}</p></div>}
+          {canSubmitProgress && <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px' }}><h3 style={{ fontSize: 16, color: INK, marginBottom: 18 }}>{workflow.status === 'changes-requested' ? 'Submit Revised Progress' : 'Progress Update'}</h3>
+            {progressImage && <img src={progressImage} alt="Selected floral artwork progress" style={{ width: '100%', height: 280, objectFit: 'cover', borderRadius: 6, marginBottom: 14 }} />}
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}><label style={{ display: 'inline-flex', alignItems: 'center', border: `1px solid ${BORDER}`, borderRadius: 6, padding: '8px 14px', fontSize: 13, color: INK, cursor: 'pointer', background: '#fff' }}>Upload Progress Image<input type="file" accept="image/*" onChange={handleProgressFile} style={{ display: 'none' }} /></label><SecondaryBtn small onClick={() => { setProgressImage(PROGRESS_IMG); setProgressImageName('floral-painting-progress.png'); setProgressError('') }}>Use Sample Progress Image</SecondaryBtn></div>
+            {progressImageName && <div style={{ fontSize: 12, color: MUTED, marginBottom: 12 }}>Selected: {progressImageName}</div>}
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: INK, marginBottom: 6 }}>Progress Note</label><textarea value={progressNote} onChange={(e) => { setProgressNote(e.target.value); setProgressError('') }} rows={5} placeholder="Describe the current progress and what you would like the customer to review." style={{ width: '100%', boxSizing: 'border-box', border: `1px solid ${progressError ? ERROR : BORDER}`, borderRadius: 6, padding: 12, fontFamily: 'Inter, sans-serif', fontSize: 14, resize: 'vertical' }} />{progressError && <div style={{ fontSize: 12, color: ERROR, marginTop: 5 }}>{progressError}</div>}<div style={{ marginTop: 16 }}><PrimaryBtn onClick={submitProgress}>Submit for Customer Review</PrimaryBtn></div>
+          </div>}
+
+          {workflow.status === 'awaiting-customer-review' && <WorkflowMessage title="Awaiting Customer Review" body="The saved progress image and note are now visible to the customer." />}
+          {workflow.status === 'progress-approved' && <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px' }}><WorkflowMessage title="Progress Approved" body="The customer approved this progress update. You can now complete the artwork." /><div style={{ marginTop: 18 }}><PrimaryBtn onClick={() => onUpdateWorkflow(order.orderNumber, { status: 'completed' })}>Mark Artwork as Completed</PrimaryBtn></div></div>}
+          {workflow.status === 'completed' && <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px' }}><h3 style={{ fontSize: 16, color: INK, marginBottom: 8 }}>Artwork Completed</h3><p style={{ fontSize: 14, color: MUTED, margin: '0 0 20px' }}>Add shipment details when the artwork is dispatched.</p><label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Carrier</label><input value={carrier} onChange={(e) => { setCarrier(e.target.value); setShippingError('') }} placeholder="e.g. DHL Express" style={{ width: '100%', boxSizing: 'border-box', border: `1px solid ${BORDER}`, borderRadius: 6, padding: 11, fontSize: 14, marginBottom: 14 }} /><label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Tracking Number</label><input value={trackingNumber} onChange={(e) => { setTrackingNumber(e.target.value); setShippingError('') }} placeholder="Enter tracking number" style={{ width: '100%', boxSizing: 'border-box', border: `1px solid ${BORDER}`, borderRadius: 6, padding: 11, fontSize: 14 }} />{shippingError && <div style={{ fontSize: 12, color: ERROR, marginTop: 6 }}>{shippingError}</div>}<div style={{ marginTop: 18 }}><PrimaryBtn onClick={markShipped}>Mark as Shipped</PrimaryBtn></div></div>}
+          {workflow.status === 'shipped' && <div style={{ background: '#f0f5f2', border: `1px solid #b2d0c4`, borderRadius: 8, padding: '24px' }}><h3 style={{ fontSize: 16, color: INK, marginBottom: 14 }}>Shipment Recorded</h3><DetailRow label="Carrier" value={workflow.carrier ?? ''} /><DetailRow label="Tracking number" value={workflow.trackingNumber ?? ''} /></div>}
+          {INCOMING_WORKFLOW_STATUSES.includes(workflow.status) && <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px' }}><p style={{ fontSize: 14, color: MUTED, margin: '0 0 16px' }}>This request has not been accepted yet.</p><PrimaryBtn onClick={() => onNavigate('creator-request')}>View Request Details</PrimaryBtn></div>}
+        </div>
+        <div><div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '20px', marginBottom: 18 }}><img src={item.image} alt={item.title} style={{ width: '100%', height: 170, objectFit: 'cover', borderRadius: 6, marginBottom: 14 }} /><div style={{ fontSize: 15, fontWeight: 600, marginBottom: 5 }}>{item.title}</div><div style={{ fontSize: 12, color: MUTED, lineHeight: 1.6 }}>{getCustomizationLabel(item)}</div></div><div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '20px' }}><h3 style={{ fontSize: 14, color: INK, marginBottom: 10 }}>Customer Context</h3><p style={{ fontSize: 12, color: MUTED, lineHeight: 1.65, margin: '0 0 12px' }}>{item.customization.instruction}</p><div style={{ fontSize: 12, color: MUTED }}>{item.customization.uploads.length} reference image{item.customization.uploads.length === 1 ? '' : 's'}</div></div></div>
+      </div>
+    </div>
+  )
+}
+
+function CreatorMissingState({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+  return <div style={{ maxWidth: 680, margin: '0 auto', padding: '80px 40px', textAlign: 'center' }}><h1 style={{ fontSize: 24, color: INK, marginBottom: 10 }}>Creator task not found</h1><p style={{ fontSize: 14, color: MUTED, marginBottom: 22 }}>Return to the dashboard and choose an available customized order.</p><PrimaryBtn onClick={() => onNavigate('creator-dashboard')}>Creator Dashboard</PrimaryBtn></div>
+}
+
 // ─── Screen: Login ────────────────────────────────────────────────────────────
 
-const LOGIN_EMAIL = 'test@artian.com'
-const LOGIN_PASSWORD = '1234'
+const PROTOTYPE_ACCOUNTS: Array<SessionUser & { password: string }> = [
+  { role: 'customer', name: 'Test User', email: 'test@artian.com', password: '1234' },
+  { role: 'creator', name: 'Elena Marsh', email: 'elena@artian.com', password: '1234' },
+]
 
-function LoginScreen({ onLogin, onNavigate }: { onLogin: () => void; onNavigate: (s: Screen) => void }) {
+function LoginScreen({ onLogin, onCancel, context }: { onLogin: (user: SessionUser) => void; onCancel: () => void; context: LoginIntent }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [emailErr, setEmailErr] = useState('')
@@ -2269,21 +2407,22 @@ function LoginScreen({ onLogin, onNavigate }: { onLogin: () => void; onNavigate:
 
   const handleSubmit = () => {
     let ok = true
+    const account = PROTOTYPE_ACCOUNTS.find((candidate) => candidate.email === email.trim().toLowerCase())
     if (!email.trim()) { setEmailErr('Email is required.'); ok = false }
-    else if (email.toLowerCase() !== LOGIN_EMAIL) { setEmailErr('No account found with this email.'); ok = false }
+    else if (!account) { setEmailErr('No prototype account found with this email.'); ok = false }
     else setEmailErr('')
     if (!password) { setPassErr('Password is required.'); ok = false }
-    else if (password !== LOGIN_PASSWORD) { setPassErr('Incorrect password.'); ok = false }
+    else if (!account || password !== account.password) { setPassErr('Incorrect password.'); ok = false }
     else setPassErr('')
-    if (ok) onLogin()
+    if (ok && account) onLogin({ role: account.role, name: account.name, email: account.email })
   }
 
   return (
-    <div style={{ minHeight: 'calc(100vh - 64px)', display: 'flex', alignItems: 'center', justifyContent: 'center', background: SURFACE, padding: '40px 24px' }}>
+    <div style={{ minHeight: 'calc(100vh - 64px)', display: 'flex', alignItems: 'center', justifyContent: 'center', background: PAGE_BG, padding: '40px 24px' }}>
       <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 10, padding: '48px 44px', width: '100%', maxWidth: 420 }}>
         <div style={{ textAlign: 'center', marginBottom: 36 }}>
           <h1 style={{ fontSize: 22, fontWeight: 700, color: INK, marginBottom: 8, letterSpacing: '-0.3px' }}>Log in to Artian</h1>
-          <p style={{ fontSize: 14, color: MUTED }}>Access your orders and saved items.</p>
+          <p style={{ fontSize: 14, color: MUTED }}>{context === 'checkout' ? 'Please log in as a customer to continue to checkout.' : 'Access customer orders or the creator workspace.'}</p>
         </div>
 
         <div style={{ marginBottom: 18 }}>
@@ -2323,12 +2462,12 @@ function LoginScreen({ onLogin, onNavigate }: { onLogin: () => void; onNavigate:
 
         <div style={{ marginTop: 20, padding: '14px 16px', background: SURFACE, borderRadius: 6, border: `1px solid ${BORDER}` }}>
           <div style={{ fontSize: 11, fontWeight: 600, color: MUTED, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: 6 }}>Prototype credentials</div>
-          <div style={{ fontSize: 13, color: INK }}>Email: <span style={{ fontFamily: 'monospace', color: ACCENT }}>test@artian.com</span></div>
-          <div style={{ fontSize: 13, color: INK }}>Password: <span style={{ fontFamily: 'monospace', color: ACCENT }}>1234</span></div>
+          <div style={{ fontSize: 13, color: INK, marginBottom: 5 }}><strong>Customer:</strong> <span style={{ fontFamily: 'monospace', color: ACCENT }}>test@artian.com / 1234</span></div>
+          <div style={{ fontSize: 13, color: INK }}><strong>Creator:</strong> <span style={{ fontFamily: 'monospace', color: ACCENT }}>elena@artian.com / 1234</span></div>
         </div>
 
         <div style={{ textAlign: 'center', marginTop: 20 }}>
-          <button onClick={() => onNavigate('browse')} style={{ background: 'none', border: 'none', fontSize: 13, color: MUTED, cursor: 'pointer', textDecoration: 'underline' }}>Continue without logging in</button>
+          <button onClick={onCancel} style={{ background: 'none', border: 'none', fontSize: 13, color: MUTED, cursor: 'pointer', textDecoration: 'underline' }}>{context === 'checkout' ? 'Return to Cart' : 'Continue without logging in'}</button>
         </div>
       </div>
     </div>
@@ -2359,18 +2498,20 @@ function MyOrdersScreen({ orders, onNavigate, onViewOrder }: { orders: OrderReco
           {orders.slice().reverse().map((order) => {
             const firstItem = order.items[0]
             const additionalItems = order.items.length - 1
-            const awaitingReview = order.status === 'Awaiting Review'
+            const customItem = order.items.find((item) => item.customized && item.customization)
+            const displayStatus = getOrderDisplayStatus(order)
+            const tone = customItem ? getWorkflowTone(getCustomWorkflow(customItem).status) : { bg: '#e8f0ec', color: ACCENT, border: '#b2d0c4' }
             return (
-              <div key={order.orderNumber} style={{ border: `1px solid ${BORDER}`, borderRadius: 10, overflow: 'hidden' }}>
+              <div key={order.orderNumber} style={{ border: `1px solid ${BORDER}`, borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 20, padding: '24px 28px', borderBottom: `1px solid ${BORDER}` }}>
                   <img src={firstItem.image} alt={firstItem.title} style={{ width: 56, height: 68, objectFit: 'cover', borderRadius: 6, flexShrink: 0 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
                       <span style={{ fontSize: 15, fontWeight: 600, color: INK }}>{firstItem.title}</span>
                       {additionalItems > 0 && <span style={{ fontSize: 12, color: MUTED }}>+ {additionalItems} more item{additionalItems === 1 ? '' : 's'}</span>}
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: awaitingReview ? '#fef8e7' : '#e8f0ec', color: awaitingReview ? '#8a6800' : ACCENT, border: `1px solid ${awaitingReview ? '#e8d98a' : '#b2d0c4'}`, borderRadius: 20, padding: '2px 10px', fontSize: 11, fontWeight: 600 }}>
-                        <span style={{ width: 5, height: 5, borderRadius: '50%', background: awaitingReview ? '#c9a800' : ACCENT, display: 'inline-block' }} />
-                        {order.status}
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: tone.bg, color: tone.color, border: `1px solid ${tone.border}`, borderRadius: 20, padding: '2px 10px', fontSize: 11, fontWeight: 600 }}>
+                        <span style={{ width: 5, height: 5, borderRadius: '50%', background: tone.color, display: 'inline-block' }} />
+                        {displayStatus}
                       </span>
                     </div>
                     <div style={{ fontSize: 13, color: MUTED, marginBottom: 2 }}>by {firstItem.creator} · Order {order.orderNumber}</div>
@@ -2384,7 +2525,7 @@ function MyOrdersScreen({ orders, onNavigate, onViewOrder }: { orders: OrderReco
 
                 <div style={{ padding: '16px 28px', background: SURFACE, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div style={{ fontSize: 13, color: MUTED }}>{order.placedLabel} · Estimated {order.delivery === 'express' ? '7–10' : '14–21'} business days</div>
-                  <PrimaryBtn small onClick={() => onViewOrder(order.orderNumber)}>{awaitingReview ? 'Track Order' : 'View Order'}</PrimaryBtn>
+                  <PrimaryBtn small onClick={() => onViewOrder(order.orderNumber)}>{customItem ? 'Track Order' : 'View Order'}</PrimaryBtn>
                 </div>
               </div>
             )
@@ -2399,25 +2540,61 @@ function MyOrdersScreen({ orders, onNavigate, onViewOrder }: { orders: OrderReco
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('browse')
+  const [history, setHistory] = useState<Screen[]>([])
   const [cfg, setCfgState] = useState<AppConfig>(DEFAULT_CONFIG)
-  const [loggedIn, setLoggedIn] = useState(false)
+  const [session, setSession] = useState<SessionUser | null>(null)
+  const [loginIntent, setLoginIntent] = useState<LoginIntent>(null)
 
   const setCfg: SetAppConfig = (update) =>
     setCfgState((prev) => ({ ...prev, ...(typeof update === 'function' ? update(prev) : update) }))
 
-  const navigate = (s: Screen) => {
-    setScreen(s)
+  const replaceScreen = (next: Screen) => {
+    setScreen(next)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
-  const handleLogin = () => {
-    setLoggedIn(true)
-    navigate('my-orders')
+  const navigate = (requested: Screen) => {
+    let target = requested
+    if (requested === 'checkout' && session?.role !== 'customer') {
+      setLoginIntent('checkout')
+      target = 'login'
+    } else if (requested === 'my-orders' && session?.role !== 'customer') {
+      setLoginIntent('my-orders')
+      target = 'login'
+    } else if ((requested === 'creator-dashboard' || requested === 'creator-request' || requested === 'creator-order') && session?.role !== 'creator') {
+      setLoginIntent(null)
+      target = 'login'
+    }
+    if (target === screen) return
+    setHistory((prev) => prev[prev.length - 1] === screen ? prev : [...prev, screen])
+    replaceScreen(target)
+  }
+
+  const goBack = () => {
+    if (history.length === 0) return
+    const previous = history[history.length - 1]
+    setHistory(history.slice(0, -1))
+    replaceScreen(previous)
+  }
+
+  const handleLogin = (user: SessionUser) => {
+    const intended = loginIntent
+    setSession(user)
+    setLoginIntent(null)
+    if (user.role === 'creator') {
+      setHistory([])
+      replaceScreen('creator-dashboard')
+      return
+    }
+    setCfg((prev) => ({ checkout: { ...prev.checkout, email: prev.checkout.email || user.email, name: prev.checkout.name || user.name } }))
+    replaceScreen(intended === 'checkout' ? 'checkout' : 'my-orders')
   }
 
   const handleLogout = () => {
-    setLoggedIn(false)
-    navigate('browse')
+    setSession(null)
+    setLoginIntent(null)
+    setHistory([])
+    replaceScreen('browse')
   }
 
   const currentOrder = cfg.orders.find((order) => order.orderNumber === cfg.currentOrderNumber) ?? cfg.orders[cfg.orders.length - 1]
@@ -2427,24 +2604,59 @@ export default function App() {
     navigate('order-status')
   }
 
+  const updateWorkflow = (orderNumber: string, update: Partial<CustomWorkflow>) => {
+    setCfgState((prev) => ({
+      ...prev,
+      orders: prev.orders.map((order) => order.orderNumber !== orderNumber ? order : {
+        ...order,
+        items: order.items.map((item) => isElenaCustomizedItem(item) ? { ...item, workflow: { ...getCustomWorkflow(item), ...update } } : item),
+      }),
+    }))
+  }
+
+  const openCreatorTask = (orderNumber: string, target: 'creator-request' | 'creator-order') => {
+    setCfg({ currentOrderNumber: orderNumber })
+    navigate(target)
+  }
+
+  const currentCreatorTask = currentOrder
+    ? getElenaTasks([currentOrder])[0]
+    : undefined
+
+  const requireCustomer = () => {
+    setLoginIntent('checkout')
+    replaceScreen('login')
+  }
+
+  const cancelLogin = () => {
+    setLoginIntent(null)
+    if (history.length > 0) goBack()
+    else replaceScreen('browse')
+  }
+
   const props = { cfg, setCfg, onNavigate: navigate }
 
   return (
-    <div style={{ minHeight: '100vh', background: '#fff', color: INK }}>
-      <Header screen={screen} cartCount={(cfg.cartActive ? 1 : 0) + cfg.simpleCartItems.length} wishlistCount={cfg.wishlist.length} loggedIn={loggedIn} onLogout={handleLogout} onNavigate={navigate} />
+    <div style={{ minHeight: '100vh', background: PAGE_BG, color: INK }}>
+      <Header screen={screen} cartCount={(cfg.cartActive ? 1 : 0) + cfg.simpleCartItems.length} wishlistCount={cfg.wishlist.length} session={session} onLogout={handleLogout} onNavigate={navigate} />
+      {screen !== 'browse' && history.length > 0 && <div style={{ maxWidth: 1200, margin: '0 auto', padding: '18px 40px 0' }}><button onClick={goBack} style={{ background: 'none', border: 'none', padding: 0, color: MUTED, fontSize: 13, cursor: 'pointer' }}>← Back</button></div>}
       {screen === 'browse' && <BrowseScreen onNavigate={navigate} onSelectProduct={(id) => setCfg({ selectedProductId: id })} />}
       {screen === 'product' && <ProductScreen cfg={cfg} setCfg={setCfg} onNavigate={navigate} />}
       {screen === 'customize-options' && <CustomizeOptionsScreen {...props} />}
       {screen === 'customize-references' && <CustomizeReferencesScreen {...props} />}
       {screen === 'customize-review' && <ReviewScreen {...props} />}
       {screen === 'cart' && <CartScreen {...props} />}
-      {screen === 'checkout' && <CheckoutScreen {...props} />}
+      {screen === 'checkout' && session?.role === 'customer' && <CheckoutScreen {...props} session={session} onRequireCustomer={requireCustomer} />}
+      {screen === 'checkout' && session?.role !== 'customer' && <LoginScreen onLogin={handleLogin} onCancel={cancelLogin} context="checkout" />}
       {screen === 'confirmation' && <ConfirmationScreen order={currentOrder} onNavigate={navigate} onViewOrder={viewOrder} />}
-      {screen === 'order-status' && <OrderStatusScreen order={currentOrder} onNavigate={navigate} />}
+      {screen === 'order-status' && <OrderStatusScreen key={currentOrder?.orderNumber} order={currentOrder} onNavigate={navigate} onUpdateWorkflow={updateWorkflow} />}
       {screen === 'wishlist' && <WishlistScreen cfg={cfg} setCfg={setCfg} onNavigate={navigate} onSelectProduct={(id) => setCfg({ selectedProductId: id })} />}
       {screen === 'creators' && <CreatorsScreen onNavigate={navigate} onSelectProduct={(id) => setCfg({ selectedProductId: id })} />}
-      {screen === 'login' && <LoginScreen onLogin={handleLogin} onNavigate={navigate} />}
-      {screen === 'my-orders' && <MyOrdersScreen orders={cfg.orders} onNavigate={navigate} onViewOrder={viewOrder} />}
+      {screen === 'login' && <LoginScreen onLogin={handleLogin} onCancel={cancelLogin} context={loginIntent} />}
+      {screen === 'my-orders' && session?.role === 'customer' && <MyOrdersScreen orders={cfg.orders} onNavigate={navigate} onViewOrder={viewOrder} />}
+      {screen === 'creator-dashboard' && session?.role === 'creator' && <CreatorDashboardScreen orders={cfg.orders} onOpenTask={openCreatorTask} />}
+      {screen === 'creator-request' && session?.role === 'creator' && <CreatorRequestScreen key={currentOrder?.orderNumber} task={currentCreatorTask} onNavigate={navigate} onUpdateWorkflow={updateWorkflow} />}
+      {screen === 'creator-order' && session?.role === 'creator' && <CreatorOrderScreen key={`${currentOrder?.orderNumber}-${currentCreatorTask ? getCustomWorkflow(currentCreatorTask.item).status : 'missing'}`} task={currentCreatorTask} onNavigate={navigate} onUpdateWorkflow={updateWorkflow} />}
     </div>
   )
 }
