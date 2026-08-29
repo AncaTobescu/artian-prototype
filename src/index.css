@@ -33,3 +33,21 @@ input, textarea, select {
 input:focus, textarea:focus, select:focus {
   box-shadow: 0 0 0 2px rgba(45, 74, 62, 0.25);
 }
+
+@media (max-width: 960px) {
+  .home-hero-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .home-product-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .home-product-grid,
+  .home-steps-grid,
+  .home-creators-grid {
+    grid-template-columns: 1fr !important;
+  }
+}

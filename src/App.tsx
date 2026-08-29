@@ -8,6 +8,7 @@ import floralPaintingProgress from '@/assets/floral-painting-progress.png'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Screen =
+  | 'home'
   | 'browse'
   | 'product'
   | 'customize-options'
@@ -583,7 +584,7 @@ function Header({ screen, cartCount, wishlistCount, session, onLogout, onNavigat
   return (
     <header style={{ borderBottom: `1px solid ${BORDER}`, background: '#fff', position: 'sticky', top: 0, zIndex: 50 }}>
       <div style={{ maxWidth: 1200, margin: '0 auto', padding: '0 40px', height: 64, display: 'flex', alignItems: 'center', gap: 40 }}>
-        <button aria-label="Go to Browse Products" onClick={() => onNavigate('browse')} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center' }}>
+        <button aria-label={isCreator ? 'Go to Creator Dashboard' : 'Go to Homepage'} onClick={() => onNavigate(isCreator ? 'creator-dashboard' : 'home')} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center' }}>
           <img src={artianLogo} alt="Artian" style={{ height: 40, width: 'auto', objectFit: 'contain', display: 'block' }} />
         </button>
         <nav style={{ display: 'flex', gap: 28, marginLeft: 8 }}>
@@ -647,6 +648,103 @@ function Header({ screen, cartCount, wishlistCount, session, onLogout, onNavigat
         </div>
       </div>
     </header>
+  )
+}
+
+// ─── Screen: Home ─────────────────────────────────────────────────────────────
+
+function HomeScreen({ onNavigate, onSelectProduct }: { onNavigate: (s: Screen) => void; onSelectProduct: (id: number) => void }) {
+  const featuredProducts = PRODUCT_CARDS.filter((product) => [1, 3, 4, 6].includes(product.id))
+  const featuredCreators = CREATORS.slice(0, 3)
+  const customizationSteps = [
+    ['Choose a product', 'Browse artwork and select a product that supports customization.'],
+    ['Share your preferences', 'Select available options, upload reference images, and add instructions for the creator.'],
+    ['Review and follow your order', 'Confirm the configuration before checkout and follow the order as the creator works on it.'],
+  ]
+
+  return (
+    <main>
+      <section aria-labelledby="home-hero-heading" style={{ maxWidth: 1200, margin: '0 auto', padding: '48px 40px 0' }}>
+        <div className="home-hero-grid" style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 12, overflow: 'hidden', display: 'grid', gridTemplateColumns: '1.05fr 0.95fr', minHeight: 500 }}>
+          <div style={{ padding: '68px 60px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'flex-start' }}>
+            <div style={{ fontSize: 11, color: ACCENT, fontWeight: 700, letterSpacing: '1.2px', textTransform: 'uppercase', marginBottom: 18 }}>Customized art marketplace</div>
+            <h1 id="home-hero-heading" style={{ fontSize: 54, lineHeight: 1.06, fontWeight: 700, letterSpacing: '-1.8px', color: INK, margin: '0 0 22px', maxWidth: 460 }}>Art made personal.</h1>
+            <p style={{ fontSize: 16, lineHeight: 1.75, color: MUTED, margin: '0 0 32px', maxWidth: 500 }}>Discover original artwork and create customized pieces shaped around your ideas, preferences, and reference images.</p>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <PrimaryBtn onClick={() => onNavigate('browse')}>Browse Products</PrimaryBtn>
+              <SecondaryBtn onClick={() => onNavigate('creators')}>Explore Creators</SecondaryBtn>
+            </div>
+          </div>
+          <div style={{ position: 'relative', background: '#ece8ee', padding: '34px', display: 'flex', alignItems: 'stretch' }}>
+            <img src={floralPaintingFramed} alt="Framed floral artwork displayed in a calm interior" style={{ width: '100%', minHeight: 420, objectFit: 'cover', display: 'block', borderRadius: 8 }} />
+            <div style={{ position: 'absolute', left: 52, right: 52, bottom: 52, background: 'rgba(255,255,255,0.94)', border: '1px solid rgba(216,211,204,0.9)', borderRadius: 6, padding: '12px 15px' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: INK, marginBottom: 2 }}>Original work, shaped around you</div>
+              <div style={{ fontSize: 11, color: MUTED }}>Explore artwork with creator-led customization options.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section aria-labelledby="featured-art-heading" style={{ maxWidth: 1200, margin: '0 auto', padding: '76px 40px 0' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 24, marginBottom: 28 }}>
+          <div>
+            <div style={{ fontSize: 11, color: ACCENT, fontWeight: 700, letterSpacing: '1px', textTransform: 'uppercase', marginBottom: 9 }}>Selected work</div>
+            <h2 id="featured-art-heading" style={{ fontSize: 30, lineHeight: 1.2, color: INK, letterSpacing: '-0.6px', margin: 0 }}>Featured Customized Art</h2>
+          </div>
+          <button onClick={() => onNavigate('browse')} style={{ border: 'none', background: 'none', color: ACCENT, padding: '6px 0', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>View all products →</button>
+        </div>
+        <div className="home-product-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 22 }}>
+          {featuredProducts.map((product) => <ProductCard key={product.id} product={product} onNavigate={onNavigate} onSelect={onSelectProduct} />)}
+        </div>
+      </section>
+
+      <section aria-labelledby="customization-works-heading" style={{ maxWidth: 1200, margin: '0 auto', padding: '88px 40px 0' }}>
+        <div style={{ textAlign: 'center', marginBottom: 34 }}>
+          <div style={{ fontSize: 11, color: ACCENT, fontWeight: 700, letterSpacing: '1px', textTransform: 'uppercase', marginBottom: 9 }}>A clear, guided process</div>
+          <h2 id="customization-works-heading" style={{ fontSize: 30, lineHeight: 1.2, color: INK, letterSpacing: '-0.6px', margin: '0 0 12px' }}>How customization works</h2>
+          <p style={{ fontSize: 14, lineHeight: 1.7, color: MUTED, maxWidth: 560, margin: '0 auto' }}>Choose the work that speaks to you, share what matters, and stay connected to the creator’s progress.</p>
+        </div>
+        <div className="home-steps-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 18 }}>
+          {customizationSteps.map(([title, description], index) => (
+            <div key={title} style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '28px 26px 30px' }}>
+              <div style={{ width: 34, height: 34, borderRadius: '50%', background: '#e8f0ec', color: ACCENT, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, marginBottom: 20 }}>{index + 1}</div>
+              <h3 style={{ fontSize: 16, color: INK, margin: '0 0 9px' }}>{title}</h3>
+              <p style={{ fontSize: 13, lineHeight: 1.7, color: MUTED, margin: 0 }}>{description}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section aria-labelledby="meet-creators-heading" style={{ maxWidth: 1200, margin: '0 auto', padding: '88px 40px 0' }}>
+        <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 12, padding: '44px' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 28, marginBottom: 30 }}>
+            <div>
+              <h2 id="meet-creators-heading" style={{ fontSize: 30, lineHeight: 1.2, color: INK, letterSpacing: '-0.6px', margin: '0 0 10px' }}>Meet the Creators</h2>
+              <p style={{ fontSize: 14, lineHeight: 1.7, color: MUTED, maxWidth: 610, margin: 0 }}>Explore artists with different styles and specialties and discover the work available through Artian.</p>
+            </div>
+            <SecondaryBtn onClick={() => onNavigate('creators')}>Explore Creators</SecondaryBtn>
+          </div>
+          <div className="home-creators-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 18 }}>
+            {featuredCreators.map((creator) => (
+              <div key={creator.id} style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden', background: PAGE_BG }}>
+                <img src={creator.studioImg} alt={`${creator.name}'s ${creator.specialty.toLowerCase()} work`} style={{ width: '100%', height: 150, objectFit: 'cover', display: 'block' }} />
+                <div style={{ padding: '17px 18px 19px', display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <img src={creator.avatar} alt="" style={{ width: 42, height: 42, borderRadius: '50%', objectFit: 'cover', border: `1px solid ${BORDER}`, flexShrink: 0 }} />
+                  <div><div style={{ fontSize: 14, fontWeight: 700, color: INK, marginBottom: 3 }}>{creator.name}</div><div style={{ fontSize: 12, color: MUTED }}>{creator.specialty}</div></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section aria-labelledby="home-final-cta" style={{ maxWidth: 1200, margin: '0 auto', padding: '88px 40px 80px' }}>
+        <div style={{ background: ACCENT, borderRadius: 10, padding: '54px 40px', textAlign: 'center' }}>
+          <h2 id="home-final-cta" style={{ fontSize: 28, color: '#fff', letterSpacing: '-0.4px', margin: '0 0 22px' }}>Find something worth making your own.</h2>
+          <button onClick={() => onNavigate('browse')} style={{ border: '1px solid rgba(255,255,255,0.8)', borderRadius: 6, padding: '11px 20px', background: '#fff', color: ACCENT, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Browse Customized Art</button>
+        </div>
+      </section>
+    </main>
   )
 }
 
@@ -2539,7 +2637,7 @@ function MyOrdersScreen({ orders, onNavigate, onViewOrder }: { orders: OrderReco
 // ─── Root ─────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [screen, setScreen] = useState<Screen>('browse')
+  const [screen, setScreen] = useState<Screen>('home')
   const [history, setHistory] = useState<Screen[]>([])
   const [cfg, setCfgState] = useState<AppConfig>(DEFAULT_CONFIG)
   const [session, setSession] = useState<SessionUser | null>(null)
@@ -2594,7 +2692,7 @@ export default function App() {
     setSession(null)
     setLoginIntent(null)
     setHistory([])
-    replaceScreen('browse')
+    replaceScreen('home')
   }
 
   const currentOrder = cfg.orders.find((order) => order.orderNumber === cfg.currentOrderNumber) ?? cfg.orders[cfg.orders.length - 1]
@@ -2631,7 +2729,7 @@ export default function App() {
   const cancelLogin = () => {
     setLoginIntent(null)
     if (history.length > 0) goBack()
-    else replaceScreen('browse')
+    else replaceScreen('home')
   }
 
   const props = { cfg, setCfg, onNavigate: navigate }
@@ -2639,7 +2737,8 @@ export default function App() {
   return (
     <div style={{ minHeight: '100vh', background: PAGE_BG, color: INK }}>
       <Header screen={screen} cartCount={(cfg.cartActive ? 1 : 0) + cfg.simpleCartItems.length} wishlistCount={cfg.wishlist.length} session={session} onLogout={handleLogout} onNavigate={navigate} />
-      {screen !== 'browse' && history.length > 0 && <div style={{ maxWidth: 1200, margin: '0 auto', padding: '18px 40px 0' }}><button onClick={goBack} style={{ background: 'none', border: 'none', padding: 0, color: MUTED, fontSize: 13, cursor: 'pointer' }}>← Back</button></div>}
+      {screen !== 'home' && history.length > 0 && <div style={{ maxWidth: 1200, margin: '0 auto', padding: '18px 40px 0' }}><button onClick={goBack} style={{ background: 'none', border: 'none', padding: 0, color: MUTED, fontSize: 13, cursor: 'pointer' }}>← Back</button></div>}
+      {screen === 'home' && <HomeScreen onNavigate={navigate} onSelectProduct={(id) => setCfg({ selectedProductId: id })} />}
       {screen === 'browse' && <BrowseScreen onNavigate={navigate} onSelectProduct={(id) => setCfg({ selectedProductId: id })} />}
       {screen === 'product' && <ProductScreen cfg={cfg} setCfg={setCfg} onNavigate={navigate} />}
       {screen === 'customize-options' && <CustomizeOptionsScreen {...props} />}
