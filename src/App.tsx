@@ -81,6 +81,13 @@ interface SimpleCartItem {
   quantity: number
 }
 
+interface CustomizedCartItem {
+  key: number
+  productId: number
+  quantity: number
+  customization: CustomizationSnapshot
+}
+
 type DeliveryMethod = 'standard' | 'express'
 
 interface CustomizationSnapshot {
@@ -101,6 +108,7 @@ interface OrderItem {
   quantity: number
   unitPrice: number
   customized: boolean
+  customizationKey?: number
   customization?: CustomizationSnapshot
   workflow?: CustomWorkflow
 }
@@ -126,7 +134,8 @@ interface AppConfig {
   uploads: UploadedImage[]
   instruction: string
   quantity: number
-  cartActive: boolean
+  customCartItems: CustomizedCartItem[]
+  editingCustomCartKey: number | null
   simpleCartItems: SimpleCartItem[]
   wishlist: number[]
   checkout: CheckoutForm
@@ -136,6 +145,28 @@ interface AppConfig {
 }
 
 type SetAppConfig = (update: Partial<AppConfig> | ((prev: AppConfig) => Partial<AppConfig>)) => void
+
+type CustomOptionKey = 'size' | 'material' | 'frame' | 'palette' | 'orientation'
+
+interface CustomOptionDefinition {
+  key: CustomOptionKey
+  label: string
+  options: string[]
+  deltas: Record<string, number>
+}
+
+interface CustomizationDefinition {
+  basePrice: number
+  serviceFee: number
+  options: CustomOptionDefinition[]
+  defaults: Pick<AppConfig, CustomOptionKey>
+  defaultInstruction: string
+  referenceDescription: string
+  referenceRequiredMessage: string
+  instructionDescription: string
+  instructionPlaceholder: string
+  usefulDetails: string
+}
 
 // ─── Tokens ───────────────────────────────────────────────────────────────────
 
@@ -167,16 +198,68 @@ const ORIENTATION_DELTA: Record<string, number> = {
 const BASE = 89
 const SERVICE_FEE = 17
 
-function calcPrice(cfg: Pick<AppConfig, 'size' | 'material' | 'frame' | 'palette' | 'orientation'>): number {
-  return (
-    BASE +
-    (SIZE_DELTA[cfg.size] ?? 0) +
-    (MATERIAL_DELTA[cfg.material] ?? 0) +
-    (FRAME_DELTA[cfg.frame] ?? 0) +
-    (PALETTE_DELTA[cfg.palette] ?? 0) +
-    (ORIENTATION_DELTA[cfg.orientation] ?? 0) +
-    SERVICE_FEE
-  )
+const FLORAL_DEFAULT_INSTRUCTION = 'Please use the uploaded reference image as the main visual inspiration for the painting. Keep the floral composition recognizable while using a soft, expressive hand-painted style with visible brushwork. Preserve the overall arrangement and character of the flowers, but allow small artistic adjustments to the background, color balance and details where needed. I would prefer a natural, harmonious palette and a painterly finish rather than a photorealistic result.'
+
+const CUSTOMIZATION_DEFINITIONS: Record<number, CustomizationDefinition> = {
+  1: {
+    basePrice: BASE,
+    serviceFee: SERVICE_FEE,
+    options: [
+      { key: 'size', label: 'Size', options: ['40 × 50 cm', '30 × 40 cm', '50 × 70 cm', '60 × 80 cm'], deltas: SIZE_DELTA },
+      { key: 'material', label: 'Material', options: ['Stretched Canvas', 'Fine Art Print', 'Mounted Board'], deltas: MATERIAL_DELTA },
+      { key: 'frame', label: 'Frame', options: ['Natural Wood', 'No Frame', 'Black Wood', 'White Wood'], deltas: FRAME_DELTA },
+      { key: 'palette', label: 'Color Palette', options: ['Warm', 'Neutral', 'Cool', 'Custom'], deltas: PALETTE_DELTA },
+      { key: 'orientation', label: 'Orientation', options: ['Portrait', 'Landscape', 'Square'], deltas: ORIENTATION_DELTA },
+    ],
+    defaults: { size: '40 × 50 cm', material: 'Stretched Canvas', frame: 'Natural Wood', palette: 'Warm', orientation: 'Portrait' },
+    defaultInstruction: FLORAL_DEFAULT_INSTRUCTION,
+    referenceDescription: 'Upload one or more reference images that show the floral composition, colors, arrangement or painting style you would like the creator to follow. The reference image is used as visual guidance and does not need to be reproduced exactly.',
+    referenceRequiredMessage: 'Please upload at least one floral reference image before continuing.',
+    instructionDescription: 'Describe the background tone, flower arrangement, color balance, level of detail or painting style you would like the creator to consider.',
+    instructionPlaceholder: 'For example: Please keep the main floral arrangement from the reference image, use softer background tones and preserve a visible hand-painted texture.',
+    usefulDetails: 'Preferred color palette · background tone · flower arrangement · level of detail · elements to emphasize or simplify · preferred painting style.',
+  },
+  4: {
+    basePrice: 110,
+    serviceFee: 18,
+    options: [
+      { key: 'size', label: 'Size', options: ['30 × 40 cm', '40 × 50 cm', '50 × 70 cm'], deltas: { '30 × 40 cm': -10, '40 × 50 cm': 0, '50 × 70 cm': 22 } },
+      { key: 'material', label: 'Material', options: ['Fine Art Paper', 'Heavyweight Drawing Paper', 'Mounted Board'], deltas: { 'Fine Art Paper': 0, 'Heavyweight Drawing Paper': 8, 'Mounted Board': 15 } },
+      { key: 'frame', label: 'Frame', options: ['No Frame', 'Natural Wood', 'Black Wood', 'White Wood'], deltas: FRAME_DELTA },
+      { key: 'palette', label: 'Shading Preference', options: ['Soft Shading', 'Balanced Detail', 'High Contrast'], deltas: { 'Soft Shading': 0, 'Balanced Detail': 5, 'High Contrast': 8 } },
+      { key: 'orientation', label: 'Orientation', options: ['Portrait', 'Landscape', 'Square'], deltas: ORIENTATION_DELTA },
+    ],
+    defaults: { size: '40 × 50 cm', material: 'Fine Art Paper', frame: 'No Frame', palette: 'Balanced Detail', orientation: 'Portrait' },
+    defaultInstruction: '',
+    referenceDescription: 'Upload one or more portrait photographs for the creator to use as drawing references. Clear images of the face and expression are most useful, and multiple photographs may be combined when explained below.',
+    referenceRequiredMessage: 'Please upload at least one portrait reference image before continuing.',
+    instructionDescription: 'Describe the preferred crop, background treatment, features to emphasize, or how multiple reference photographs should be combined.',
+    instructionPlaceholder: 'For example: Use a close portrait crop, keep the background minimal, and give particular attention to the eyes and expression.',
+    usefulDetails: 'Preferred crop · background treatment · facial features to emphasize · expression · how multiple photographs should be combined.',
+  },
+  6: {
+    basePrice: 99,
+    serviceFee: 17,
+    options: [
+      { key: 'size', label: 'Size', options: ['30 × 40 cm', '40 × 50 cm', '50 × 70 cm', '60 × 80 cm'], deltas: { '30 × 40 cm': -10, '40 × 50 cm': 0, '50 × 70 cm': 20, '60 × 80 cm': 32 } },
+      { key: 'material', label: 'Print Material', options: ['Fine Art Print', 'Premium Matte Print', 'Mounted Board'], deltas: { 'Fine Art Print': 0, 'Premium Matte Print': 10, 'Mounted Board': 15 } },
+      { key: 'frame', label: 'Frame', options: ['No Frame', 'Natural Wood', 'Black Wood', 'White Wood'], deltas: FRAME_DELTA },
+      { key: 'palette', label: 'Background', options: ['Clean / Minimal', 'Soft Neutral', 'Artistic', 'Custom'], deltas: { 'Clean / Minimal': 0, 'Soft Neutral': 5, Artistic: 10, Custom: 15 } },
+      { key: 'orientation', label: 'Orientation', options: ['Portrait', 'Landscape', 'Square'], deltas: ORIENTATION_DELTA },
+    ],
+    defaults: { size: '40 × 50 cm', material: 'Fine Art Print', frame: 'No Frame', palette: 'Clean / Minimal', orientation: 'Portrait' },
+    defaultInstruction: '',
+    referenceDescription: 'Upload one or more photographs of the dog for the creator to use as portrait references. Clear images that show expression, markings, and important details are especially helpful.',
+    referenceRequiredMessage: 'Please upload at least one dog reference photograph before continuing.',
+    instructionDescription: 'Describe the preferred expression, background, collar or accessories, crop, and any details that should receive extra attention.',
+    instructionPlaceholder: 'For example: Use a close-up composition, keep the blue collar, and emphasize the dog’s bright expression against a soft neutral background.',
+    usefulDetails: 'Preferred expression · close-up or full-body crop · background · collar or accessories · markings and details to emphasize.',
+  },
+}
+
+function calcPrice(productId: number, cfg: Pick<AppConfig, CustomOptionKey>): number {
+  const definition = CUSTOMIZATION_DEFINITIONS[productId] ?? CUSTOMIZATION_DEFINITIONS[1]
+  return definition.basePrice + definition.serviceFee + definition.options.reduce((total, option) => total + (option.deltas[cfg[option.key]] ?? 0), 0)
 }
 
 function formatPriceAdjustment(value: number): string {
@@ -191,6 +274,8 @@ const SHIPPING: Record<string, number> = { standard: 8, express: 18 }
 
 const DEFAULT_CONFIG: AppConfig = {
   selectedProductId: 1,
+  customCartItems: [],
+  editingCustomCartKey: null,
   simpleCartItems: [],
   wishlist: [],
   size: '40 × 50 cm',
@@ -199,10 +284,8 @@ const DEFAULT_CONFIG: AppConfig = {
   palette: 'Warm',
   orientation: 'Portrait',
   uploads: [],
-  instruction:
-    'Please use the uploaded reference image as the main visual inspiration for the painting. Keep the floral composition recognizable while using a soft, expressive hand-painted style with visible brushwork. Preserve the overall arrangement and character of the flowers, but allow small artistic adjustments to the background, color balance and details where needed. I would prefer a natural, harmonious palette and a painterly finish rather than a photorealistic result.',
+  instruction: FLORAL_DEFAULT_INSTRUCTION,
   quantity: 1,
-  cartActive: false,
   checkout: { email: '', name: '', address1: '', address2: '', city: '', postal: '', country: 'Austria' },
   delivery: 'standard',
   orders: [],
@@ -222,7 +305,6 @@ const PRODUCT_CARDS = [
 
 // ─── Image constants ──────────────────────────────────────────────────────────
 
-const FLORAL_IMG = floralPaintingMain
 const FLORAL_THUMB_1 = floralPaintingMain
 const FLORAL_THUMB_2 = floralPaintingDetail
 const FLORAL_THUMB_3 = floralPaintingFramed
@@ -295,10 +377,10 @@ const PRODUCT_DETAILS: Record<number, ProductDetail> = {
       'https://images.unsplash.com/photo-1582201957417-24546f2e643d?w=200&h=250&fit=crop&auto=format',
     ],
     creatorImg: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=80&h=80&fit=crop&auto=format',
-    description: 'A hand-drawn graphite portrait study with soft tonal transitions and expressive pencil work. The piece focuses on facial expression, gaze and natural shading, presented as an original drawing on quality art paper.',
-    customizable: [],
+    description: 'A hand-drawn graphite portrait created from your reference photographs. Marcus Bell translates expression, gaze, and defining details into an original drawing with your chosen shading treatment, paper, size, orientation, and framing.',
+    customizable: ['Size', 'Drawing material', 'Frame', 'Shading preference', 'Orientation', 'Reference images', 'Additional instructions'],
     delivery: '16–22 business days',
-    isFullFlow: false,
+    isFullFlow: true,
   },
   5: {
     mainImgs: [
@@ -323,37 +405,32 @@ const PRODUCT_DETAILS: Record<number, ProductDetail> = {
       'https://images.unsplash.com/photo-1587300003388-59208cc962cb?w=200&h=250&fit=crop&auto=format',
     ],
     creatorImg: 'https://images.unsplash.com/photo-1487412720507-e7ab37603c6f?w=80&h=80&fit=crop&auto=format',
-    description: 'An expressive dog portrait offered as a gallery-quality art print. The standard catalog piece focuses on the dog’s lively expression, natural coloring and familiar character without requiring customer reference images.',
-    customizable: [],
+    description: 'A personalized dog portrait art print created from your photographs. Clara Roth preserves the dog’s recognizable expression, markings, and character while adapting the background, composition, print material, size, and framing to your preferences.',
+    customizable: ['Size', 'Print material', 'Frame', 'Background', 'Orientation', 'Reference photographs', 'Additional instructions'],
     delivery: '18–24 business days',
-    isFullFlow: false,
+    isFullFlow: true,
   },
 }
 
 function getCartItems(cfg: AppConfig): OrderItem[] {
   const items: OrderItem[] = []
-  const customProduct = PRODUCT_CARDS[0]
 
-  if (cfg.cartActive) {
+  cfg.customCartItems.forEach((cartItem) => {
+    const customProduct = PRODUCT_CARDS.find((candidate) => candidate.id === cartItem.productId)
+    const detail = PRODUCT_DETAILS[cartItem.productId]
+    if (!customProduct || !detail) return
     items.push({
       productId: customProduct.id,
       title: customProduct.title,
       creator: customProduct.creator,
-      image: FLORAL_THUMB_1,
-      quantity: cfg.quantity,
-      unitPrice: calcPrice(cfg),
+      image: detail.thumbs[0],
+      quantity: cartItem.quantity,
+      unitPrice: calcPrice(cartItem.productId, cartItem.customization),
       customized: true,
-      customization: {
-        size: cfg.size,
-        material: cfg.material,
-        frame: cfg.frame,
-        palette: cfg.palette,
-        orientation: cfg.orientation,
-        uploads: cfg.uploads.map((upload) => ({ ...upload })),
-        instruction: cfg.instruction,
-      },
+      customizationKey: cartItem.key,
+      customization: { ...cartItem.customization, uploads: cartItem.customization.uploads.map((upload) => ({ ...upload })) },
     })
-  }
+  })
 
   cfg.simpleCartItems.forEach((cartItem) => {
     const product = PRODUCT_CARDS.find((candidate) => candidate.id === cartItem.productId)
@@ -379,7 +456,12 @@ function getItemsSubtotal(items: OrderItem[]): number {
 
 function getCustomizationLabel(item: OrderItem): string {
   const custom = item.customization
-  return custom ? `${custom.size} · ${custom.material} · ${custom.frame} · ${custom.palette} · ${custom.orientation}` : ''
+  return custom ? getCustomizationRows(item.productId, custom).map(([, value]) => value).join(' · ') : ''
+}
+
+function getCustomizationRows(productId: number, custom: Pick<CustomizationSnapshot, CustomOptionKey>): [string, string][] {
+  const definition = CUSTOMIZATION_DEFINITIONS[productId] ?? CUSTOMIZATION_DEFINITIONS[1]
+  return definition.options.map((option) => [option.label, custom[option.key]])
 }
 
 const WORKFLOW_LABELS: Record<CustomWorkflowStatus, string> = {
@@ -397,8 +479,8 @@ const WORKFLOW_LABELS: Record<CustomWorkflowStatus, string> = {
 const INCOMING_WORKFLOW_STATUSES: CustomWorkflowStatus[] = ['pending-creator-review', 'modification-requested', 'customer-response-sent']
 const ACTIVE_WORKFLOW_STATUSES: CustomWorkflowStatus[] = ['in-progress', 'awaiting-customer-review', 'changes-requested', 'progress-approved', 'completed', 'shipped']
 
-function isElenaCustomizedItem(item: OrderItem): boolean {
-  return item.creator === 'Elena Marsh' && item.customized && Boolean(item.customization)
+function isCustomizedItem(item: OrderItem): boolean {
+  return item.customized && Boolean(item.customization)
 }
 
 function getCustomWorkflow(item: OrderItem): CustomWorkflow {
@@ -424,8 +506,8 @@ interface CreatorTask {
   item: OrderItem
 }
 
-function getElenaTasks(orders: OrderRecord[]): CreatorTask[] {
-  return orders.flatMap((order) => order.items.filter(isElenaCustomizedItem).map((item) => ({ order, item })))
+function getCreatorTasks(orders: OrderRecord[], creatorName?: string): CreatorTask[] {
+  return orders.flatMap((order) => order.items.filter((item) => isCustomizedItem(item) && (!creatorName || item.creator === creatorName)).map((item) => ({ order, item })))
 }
 
 // ─── Shared UI primitives ─────────────────────────────────────────────────────
@@ -851,6 +933,7 @@ function ProductScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig; setCfg: Se
 
   const product = PRODUCT_CARDS.find((p) => p.id === cfg.selectedProductId) ?? PRODUCT_CARDS[0]
   const detail = PRODUCT_DETAILS[product.id] ?? PRODUCT_DETAILS[1]
+  const customizationDefinition = CUSTOMIZATION_DEFINITIONS[product.id]
   const wishlisted = cfg.wishlist.includes(product.id)
 
   const toggleWishlist = () => {
@@ -868,6 +951,19 @@ function ProductScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig; setCfg: Se
     setCfg({ simpleCartItems: updated })
     setAddedToCart(true)
     setTimeout(() => setAddedToCart(false), 2000)
+  }
+
+  const handleCustomize = () => {
+    if (!customizationDefinition) return
+    setCfg({
+      selectedProductId: product.id,
+      ...customizationDefinition.defaults,
+      uploads: [],
+      instruction: customizationDefinition.defaultInstruction,
+      quantity: 1,
+      editingCustomCartKey: null,
+    })
+    onNavigate('customize-options')
   }
 
   return (
@@ -924,7 +1020,7 @@ function ProductScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig; setCfg: Se
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
               {detail.isFullFlow ? (
-                <PrimaryBtn onClick={() => onNavigate('customize-options')}>Customize Product</PrimaryBtn>
+                <PrimaryBtn onClick={handleCustomize}>Customize Product</PrimaryBtn>
               ) : (
                 <PrimaryBtn onClick={handleAddToCart}>
                   {addedToCart ? '✓ Added to Cart' : 'Add to Cart'}
@@ -952,12 +1048,16 @@ function ProductScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig; setCfg: Se
 const STEPS = ['Product', 'Options', 'References', 'Review']
 
 function CustomizeOptionsScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig; setCfg: SetAppConfig; onNavigate: (s: Screen) => void }) {
-  const price = calcPrice(cfg)
+  const product = PRODUCT_CARDS.find((candidate) => candidate.id === cfg.selectedProductId) ?? PRODUCT_CARDS[0]
+  const detail = PRODUCT_DETAILS[product.id] ?? PRODUCT_DETAILS[1]
+  const definition = CUSTOMIZATION_DEFINITIONS[product.id] ?? CUSTOMIZATION_DEFINITIONS[1]
+  const price = calcPrice(product.id, cfg)
+  const configurationRows = getCustomizationRows(product.id, cfg)
 
   return (
     <div style={{ maxWidth: 1200, margin: '0 auto', padding: '40px 40px 80px' }}>
       <div style={{ marginBottom: 28 }}>
-        <Breadcrumb items={[{ label: 'Browse Products', screen: 'browse' }, { label: 'Custom Floral Painting', screen: 'product' }, { label: 'Customize' }]} onNavigate={onNavigate} />
+        <Breadcrumb items={[{ label: 'Browse Products', screen: 'browse' }, { label: product.title, screen: 'product' }, { label: 'Customize' }]} onNavigate={onNavigate} />
       </div>
       <h1 style={{ fontSize: 26, fontWeight: 700, color: INK, marginBottom: 32, letterSpacing: '-0.3px' }}>Customize Your Product</h1>
       <ProgressSteps steps={STEPS} active={1} />
@@ -965,10 +1065,10 @@ function CustomizeOptionsScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig; s
       <div style={{ display: 'grid', gridTemplateColumns: '420px 1fr', gap: 56 }}>
         <div>
           <div style={{ borderRadius: 8, overflow: 'hidden', background: SURFACE, marginBottom: 16, border: `1px solid ${BORDER}` }}>
-            <img src={FLORAL_IMG} alt="Custom Floral Painting preview" style={{ width: '100%', height: 480, objectFit: 'cover', display: 'block' }} />
+            <img src={detail.mainImgs[0]} alt={`${product.title} preview`} style={{ width: '100%', height: 480, objectFit: 'cover', display: 'block' }} />
           </div>
           <div style={{ background: SURFACE, borderRadius: 6, padding: '14px 16px', fontSize: 13 }}>
-            {[['Size', cfg.size], ['Material', cfg.material], ['Frame', cfg.frame], ['Palette', cfg.palette], ['Orientation', cfg.orientation]].map(([k, v]) => (
+            {configurationRows.map(([k, v]) => (
               <div key={k} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
                 <span style={{ color: MUTED }}>{k}</span>
                 <span style={{ color: INK, fontWeight: 500 }}>{v}</span>
@@ -978,31 +1078,13 @@ function CustomizeOptionsScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig; s
         </div>
 
         <div>
-          <ConfigSection label="Size">
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {['40 × 50 cm', '30 × 40 cm', '50 × 70 cm', '60 × 80 cm'].map((s) => <OptionBtn key={s} label={s} selected={cfg.size === s} onClick={() => setCfg({ size: s })} />)}
-            </div>
-          </ConfigSection>
-          <ConfigSection label="Material">
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {['Stretched Canvas', 'Fine Art Print', 'Mounted Board'].map((s) => <OptionBtn key={s} label={s} selected={cfg.material === s} onClick={() => setCfg({ material: s })} />)}
-            </div>
-          </ConfigSection>
-          <ConfigSection label="Frame">
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {['Natural Wood', 'No Frame', 'Black Wood', 'White Wood'].map((s) => <OptionBtn key={s} label={s} selected={cfg.frame === s} onClick={() => setCfg({ frame: s })} />)}
-            </div>
-          </ConfigSection>
-          <ConfigSection label="Color Palette">
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {['Warm', 'Neutral', 'Cool', 'Custom'].map((s) => <OptionBtn key={s} label={s} selected={cfg.palette === s} onClick={() => setCfg({ palette: s })} />)}
-            </div>
-          </ConfigSection>
-          <ConfigSection label="Orientation" last>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {['Portrait', 'Landscape', 'Square'].map((s) => <OptionBtn key={s} label={s} selected={cfg.orientation === s} onClick={() => setCfg({ orientation: s })} />)}
-            </div>
-          </ConfigSection>
+          {definition.options.map((option, index) => (
+            <ConfigSection key={option.key} label={option.label} last={index === definition.options.length - 1}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {option.options.map((value) => <OptionBtn key={value} label={value} selected={cfg[option.key] === value} onClick={() => setCfg({ [option.key]: value })} />)}
+              </div>
+            </ConfigSection>
+          ))}
 
           <div style={{ marginTop: 32, padding: '20px 0 0', borderTop: `1px solid ${BORDER}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div>
@@ -1032,7 +1114,10 @@ function CustomizeReferencesScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig
   const fileInputRef = useRef<HTMLInputElement>(null)
   const errorRef = useRef<HTMLDivElement>(null)
 
-  const price = calcPrice(cfg)
+  const product = PRODUCT_CARDS.find((candidate) => candidate.id === cfg.selectedProductId) ?? PRODUCT_CARDS[0]
+  const definition = CUSTOMIZATION_DEFINITIONS[product.id] ?? CUSTOMIZATION_DEFINITIONS[1]
+  const price = calcPrice(product.id, cfg)
+  const configurationRows = getCustomizationRows(product.id, cfg)
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(e.target.files ?? [])
@@ -1072,7 +1157,7 @@ function CustomizeReferencesScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig
 
   const handleContinue = () => {
     if (cfg.uploads.length === 0) {
-      setUploadError('Please upload at least one floral reference image before continuing.')
+      setUploadError(definition.referenceRequiredMessage)
       errorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       return
     }
@@ -1082,7 +1167,7 @@ function CustomizeReferencesScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig
   return (
     <div style={{ maxWidth: 1200, margin: '0 auto', padding: '40px 40px 80px' }}>
       <div style={{ marginBottom: 28 }}>
-        <Breadcrumb items={[{ label: 'Browse Products', screen: 'browse' }, { label: 'Custom Floral Painting', screen: 'product' }, { label: 'Customize' }]} onNavigate={onNavigate} />
+        <Breadcrumb items={[{ label: 'Browse Products', screen: 'browse' }, { label: product.title, screen: 'product' }, { label: 'Customize' }]} onNavigate={onNavigate} />
       </div>
       <h1 style={{ fontSize: 26, fontWeight: 700, color: INK, marginBottom: 32, letterSpacing: '-0.3px' }}>Customize Your Product</h1>
       <ProgressSteps steps={STEPS} active={2} />
@@ -1091,7 +1176,7 @@ function CustomizeReferencesScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig
         <div>
           <div style={{ marginBottom: 32 }}>
             <h3 style={{ fontSize: 14, fontWeight: 600, color: INK, marginBottom: 6 }}>Reference Images</h3>
-            <p style={{ fontSize: 13, color: MUTED, marginBottom: 16, lineHeight: 1.6 }}>Upload one or more reference images that show the floral composition, colors, arrangement or painting style you would like the creator to follow. The reference image is used as visual guidance and does not need to be reproduced exactly.</p>
+            <p style={{ fontSize: 13, color: MUTED, marginBottom: 16, lineHeight: 1.6 }}>{definition.referenceDescription}</p>
 
             <div ref={errorRef}>
               {uploadError && (
@@ -1127,11 +1212,11 @@ function CustomizeReferencesScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig
 
           <div style={{ marginBottom: 32 }}>
             <h3 style={{ fontSize: 14, fontWeight: 600, color: INK, marginBottom: 6 }}>Additional Instructions</h3>
-            <p style={{ fontSize: 13, color: MUTED, marginBottom: 12, lineHeight: 1.6 }}>Describe the background tone, flower arrangement, color balance, level of detail or painting style you would like the creator to consider.</p>
+            <p style={{ fontSize: 13, color: MUTED, marginBottom: 12, lineHeight: 1.6 }}>{definition.instructionDescription}</p>
             <textarea
               value={cfg.instruction}
               onChange={(e) => { if (e.target.value.length <= 600) setCfg({ instruction: e.target.value }) }}
-              placeholder="For example: Please keep the main floral arrangement from the reference image, use softer background tones and preserve a visible hand-painted texture."
+              placeholder={definition.instructionPlaceholder}
               rows={5}
               style={{ width: '100%', border: `1px solid ${BORDER}`, borderRadius: 6, padding: '12px 14px', fontSize: 14, color: INK, lineHeight: 1.6, resize: 'vertical', background: '#fff', boxSizing: 'border-box', fontFamily: 'Inter, sans-serif' }}
             />
@@ -1140,7 +1225,7 @@ function CustomizeReferencesScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig
 
           <div style={{ background: SURFACE, borderRadius: 6, padding: '14px 16px', fontSize: 13, color: MUTED, lineHeight: 1.6, marginBottom: 32 }}>
             <strong style={{ color: INK, display: 'block', marginBottom: 4 }}>Useful details to include</strong>
-            Preferred color palette · background tone · flower arrangement · level of detail · elements to emphasize or simplify · preferred painting style.
+            {definition.usefulDetails}
           </div>
 
           <div style={{ display: 'flex', gap: 12 }}>
@@ -1152,7 +1237,7 @@ function CustomizeReferencesScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig
         <div>
           <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px', position: 'sticky', top: 88 }}>
             <h3 style={{ fontSize: 14, fontWeight: 600, color: INK, marginBottom: 16 }}>Your Configuration</h3>
-            {[['Size', cfg.size], ['Material', cfg.material], ['Frame', cfg.frame], ['Palette', cfg.palette], ['Orientation', cfg.orientation], ['References', `${cfg.uploads.length} photo${cfg.uploads.length !== 1 ? 's' : ''} uploaded`]].map(([k, v]) => (
+            {[...configurationRows, ['References', `${cfg.uploads.length} photo${cfg.uploads.length !== 1 ? 's' : ''} uploaded`] as [string, string]].map(([k, v]) => (
               <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 8 }}>
                 <span style={{ color: MUTED }}>{k}</span>
                 <span style={{ color: INK, fontWeight: 500 }}>{v}</span>
@@ -1174,19 +1259,40 @@ function CustomizeReferencesScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig
 // ─── Screen 5: Configuration Review ──────────────────────────────────────────
 
 function ReviewScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig; setCfg: SetAppConfig; onNavigate: (s: Screen) => void }) {
-  const price = calcPrice(cfg)
+  const product = PRODUCT_CARDS.find((candidate) => candidate.id === cfg.selectedProductId) ?? PRODUCT_CARDS[0]
+  const detail = PRODUCT_DETAILS[product.id] ?? PRODUCT_DETAILS[1]
+  const definition = CUSTOMIZATION_DEFINITIONS[product.id] ?? CUSTOMIZATION_DEFINITIONS[1]
+  const price = calcPrice(product.id, cfg)
   const shipping = SHIPPING[cfg.delivery]
   const total = price + shipping
+  const configurationRows = getCustomizationRows(product.id, cfg)
 
   const handleAddToCart = () => {
-    setCfg({ cartActive: true })
+    const customization: CustomizationSnapshot = {
+      size: cfg.size,
+      material: cfg.material,
+      frame: cfg.frame,
+      palette: cfg.palette,
+      orientation: cfg.orientation,
+      uploads: cfg.uploads.map((upload) => ({ ...upload })),
+      instruction: cfg.instruction,
+    }
+    if (cfg.editingCustomCartKey !== null) {
+      setCfg({
+        customCartItems: cfg.customCartItems.map((item) => item.key === cfg.editingCustomCartKey ? { ...item, productId: product.id, quantity: cfg.quantity, customization } : item),
+        editingCustomCartKey: null,
+      })
+    } else {
+      const nextKey = Math.max(0, ...cfg.customCartItems.map((item) => item.key)) + 1
+      setCfg({ customCartItems: [...cfg.customCartItems, { key: nextKey, productId: product.id, quantity: cfg.quantity, customization }] })
+    }
     onNavigate('cart')
   }
 
   return (
     <div style={{ maxWidth: 1200, margin: '0 auto', padding: '40px 40px 80px' }}>
       <div style={{ marginBottom: 28 }}>
-        <Breadcrumb items={[{ label: 'Browse Products', screen: 'browse' }, { label: 'Custom Floral Painting', screen: 'product' }, { label: 'Customize' }]} onNavigate={onNavigate} />
+        <Breadcrumb items={[{ label: 'Browse Products', screen: 'browse' }, { label: product.title, screen: 'product' }, { label: 'Customize' }]} onNavigate={onNavigate} />
       </div>
       <h1 style={{ fontSize: 26, fontWeight: 700, color: INK, marginBottom: 32, letterSpacing: '-0.3px' }}>Customize Your Product</h1>
       <ProgressSteps steps={STEPS} active={3} />
@@ -1198,16 +1304,16 @@ function ReviewScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig; setCfg: Set
               <h3 style={{ fontSize: 15, fontWeight: 600, color: INK }}>Product</h3>
             </div>
             <div style={{ padding: '20px 24px', display: 'flex', gap: 20 }}>
-              <img src={FLORAL_THUMB_1} alt="Custom Floral Painting" style={{ width: 80, height: 100, objectFit: 'cover', borderRadius: 4, background: SURFACE, flexShrink: 0 }} />
+              <img src={detail.thumbs[0]} alt={product.title} style={{ width: 80, height: 100, objectFit: 'cover', borderRadius: 4, background: SURFACE, flexShrink: 0 }} />
               <div>
-                <div style={{ fontSize: 15, fontWeight: 600, color: INK, marginBottom: 4 }}>Custom Floral Painting</div>
-                <div style={{ fontSize: 13, color: MUTED, marginBottom: 2 }}>by Elena Marsh</div>
-                <div style={{ fontSize: 13, color: MUTED }}>Painting · Customized artwork</div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: INK, marginBottom: 4 }}>{product.title}</div>
+                <div style={{ fontSize: 13, color: MUTED, marginBottom: 2 }}>by {product.creator}</div>
+                <div style={{ fontSize: 13, color: MUTED }}>{product.category} · Customized artwork</div>
               </div>
             </div>
           </div>
 
-          <ReviewSection title="Configuration" onEdit={() => onNavigate('customize-options')} rows={[['Size', cfg.size], ['Material', cfg.material], ['Frame', cfg.frame], ['Color Palette', cfg.palette], ['Orientation', cfg.orientation]]} />
+          <ReviewSection title="Configuration" onEdit={() => onNavigate('customize-options')} rows={configurationRows} />
 
           <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden', marginBottom: 24 }}>
             <div style={{ padding: '18px 24px', borderBottom: `1px solid ${BORDER}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1233,13 +1339,9 @@ function ReviewScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig; setCfg: Set
           <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px', position: 'sticky', top: 88 }}>
             <h3 style={{ fontSize: 15, fontWeight: 600, color: INK, marginBottom: 20 }}>Order Summary</h3>
             {[
-              ['Base price', `€${BASE}`],
-              [`Size · ${cfg.size}`, formatPriceAdjustment(SIZE_DELTA[cfg.size] ?? 0)],
-              [`Material · ${cfg.material}`, formatPriceAdjustment(MATERIAL_DELTA[cfg.material] ?? 0)],
-              [`Frame · ${cfg.frame}`, formatPriceAdjustment(FRAME_DELTA[cfg.frame] ?? 0)],
-              [`Color palette · ${cfg.palette}`, formatPriceAdjustment(PALETTE_DELTA[cfg.palette] ?? 0)],
-              [`Orientation · ${cfg.orientation}`, formatPriceAdjustment(ORIENTATION_DELTA[cfg.orientation] ?? 0)],
-              ['Creator service fee', formatPriceAdjustment(SERVICE_FEE)],
+              ['Base price', `€${definition.basePrice}`],
+              ...definition.options.map((option) => [`${option.label} · ${cfg[option.key]}`, formatPriceAdjustment(option.deltas[cfg[option.key]] ?? 0)]),
+              ['Creator service fee', formatPriceAdjustment(definition.serviceFee)],
             ].map(([k, v]) => (
               <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 10 }}>
                 <span style={{ color: MUTED }}>{k}</span>
@@ -1293,13 +1395,28 @@ function ReviewSection({ title, onEdit, rows }: { title: string; onEdit: () => v
 // ─── Screen 6: Cart ───────────────────────────────────────────────────────────
 
 function CartScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig; setCfg: SetAppConfig; onNavigate: (s: Screen) => void }) {
-  const price = calcPrice(cfg)
   const shipping = SHIPPING[cfg.delivery]
   const cartItems = getCartItems(cfg)
   const subtotal = getItemsSubtotal(cartItems)
   const total = subtotal + shipping
 
   const isEmpty = cartItems.length === 0
+
+  const editCustomItem = (item: CustomizedCartItem) => {
+    setCfg({
+      selectedProductId: item.productId,
+      size: item.customization.size,
+      material: item.customization.material,
+      frame: item.customization.frame,
+      palette: item.customization.palette,
+      orientation: item.customization.orientation,
+      uploads: item.customization.uploads.map((upload) => ({ ...upload })),
+      instruction: item.customization.instruction,
+      quantity: item.quantity,
+      editingCustomCartKey: item.key,
+    })
+    onNavigate('customize-options')
+  }
 
   if (isEmpty) {
     return (
@@ -1316,35 +1433,32 @@ function CartScreen({ cfg, setCfg, onNavigate }: { cfg: AppConfig; setCfg: SetAp
       <h1 style={{ fontSize: 26, fontWeight: 700, color: INK, marginBottom: 40, letterSpacing: '-0.3px' }}>Your Cart</h1>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 48 }}>
         <div>
-          {cfg.cartActive && <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden' }}>
-            <div style={{ padding: '24px', display: 'flex', gap: 20 }}>
-              <img src={FLORAL_THUMB_1} alt="Custom Floral Painting" style={{ width: 100, height: 120, objectFit: 'cover', borderRadius: 6, background: SURFACE, flexShrink: 0 }} />
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                  <div style={{ fontSize: 15, fontWeight: 600, color: INK }}>Custom Floral Painting</div>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: INK }}>€{price * cfg.quantity}</div>
-                </div>
-                <div style={{ fontSize: 13, color: MUTED, marginBottom: 14 }}>by Elena Marsh</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 24px', marginBottom: 16 }}>
-                  {[['Size', cfg.size], ['Material', cfg.material], ['Frame', cfg.frame], ['Palette', cfg.palette], ['Orientation', cfg.orientation], ['References', `${cfg.uploads.length} photo${cfg.uploads.length !== 1 ? 's' : ''}`]].map(([k, v]) => (
-                    <div key={k} style={{ fontSize: 12 }}>
-                      <span style={{ color: MUTED }}>{k}: </span>
-                      <span style={{ color: INK, fontWeight: 500 }}>{v}</span>
+          {cfg.customCartItems.map((item, index) => {
+            const product = PRODUCT_CARDS.find((candidate) => candidate.id === item.productId)
+            const detail = PRODUCT_DETAILS[item.productId]
+            if (!product || !detail) return null
+            const itemPrice = calcPrice(item.productId, item.customization)
+            const rows = [...getCustomizationRows(item.productId, item.customization), ['References', `${item.customization.uploads.length} photo${item.customization.uploads.length !== 1 ? 's' : ''}`] as [string, string]]
+            return <div key={item.key} style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden', marginTop: index === 0 ? 0 : 16 }}>
+              <div style={{ padding: '24px', display: 'flex', gap: 20 }}>
+                <img src={detail.thumbs[0]} alt={product.title} style={{ width: 100, height: 120, objectFit: 'cover', borderRadius: 6, background: SURFACE, flexShrink: 0 }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><div style={{ fontSize: 15, fontWeight: 600, color: INK }}>{product.title}</div><div style={{ fontSize: 15, fontWeight: 700, color: INK }}>€{itemPrice * item.quantity}</div></div>
+                  <div style={{ fontSize: 13, color: MUTED, marginBottom: 14 }}>by {product.creator}</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 24px', marginBottom: 16 }}>{rows.map(([label, value]) => <div key={label} style={{ fontSize: 12 }}><span style={{ color: MUTED }}>{label}: </span><span style={{ color: INK, fontWeight: 500 }}>{value}</span></div>)}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', border: `1px solid ${BORDER}`, borderRadius: 6, overflow: 'hidden' }}>
+                      <button onClick={() => setCfg({ customCartItems: item.quantity <= 1 ? cfg.customCartItems.filter((candidate) => candidate.key !== item.key) : cfg.customCartItems.map((candidate) => candidate.key === item.key ? { ...candidate, quantity: candidate.quantity - 1 } : candidate) })} style={{ padding: '6px 12px', background: 'none', border: 'none', cursor: 'pointer', color: INK, fontSize: 16 }}>−</button>
+                      <span style={{ padding: '6px 12px', fontSize: 14, fontWeight: 500, borderLeft: `1px solid ${BORDER}`, borderRight: `1px solid ${BORDER}` }}>{item.quantity}</span>
+                      <button onClick={() => setCfg({ customCartItems: cfg.customCartItems.map((candidate) => candidate.key === item.key ? { ...candidate, quantity: candidate.quantity + 1 } : candidate) })} style={{ padding: '6px 12px', background: 'none', border: 'none', cursor: 'pointer', color: INK, fontSize: 16 }}>+</button>
                     </div>
-                  ))}
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', border: `1px solid ${BORDER}`, borderRadius: 6, overflow: 'hidden' }}>
-                    <button onClick={() => setCfg({ quantity: Math.max(1, cfg.quantity - 1) })} style={{ padding: '6px 12px', background: 'none', border: 'none', cursor: 'pointer', color: INK, fontSize: 16 }}>−</button>
-                    <span style={{ padding: '6px 12px', fontSize: 14, fontWeight: 500, borderLeft: `1px solid ${BORDER}`, borderRight: `1px solid ${BORDER}` }}>{cfg.quantity}</span>
-                    <button onClick={() => setCfg({ quantity: cfg.quantity + 1 })} style={{ padding: '6px 12px', background: 'none', border: 'none', cursor: 'pointer', color: INK, fontSize: 16 }}>+</button>
+                    <button onClick={() => editCustomItem(item)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: ACCENT, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4 }}><EditIcon /> Edit configuration</button>
+                    <button onClick={() => setCfg({ customCartItems: cfg.customCartItems.filter((candidate) => candidate.key !== item.key) })} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: MUTED, marginLeft: 'auto' }}>Remove</button>
                   </div>
-                  <button onClick={() => onNavigate('customize-options')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: ACCENT, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4 }}><EditIcon /> Edit configuration</button>
-                  <button onClick={() => setCfg({ cartActive: false })} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: MUTED, marginLeft: 'auto' }}>Remove</button>
                 </div>
               </div>
             </div>
-          </div>}
+          })}
           {/* Simple (non-customizable) cart items */}
           {cfg.simpleCartItems.map((item) => {
             const p = PRODUCT_CARDS.find((c) => c.id === item.productId)
@@ -1471,7 +1585,8 @@ function CheckoutScreen({ cfg, setCfg, onNavigate, session, onRequireCustomer }:
     setCfg((prev) => ({
       orders: [...prev.orders, order],
       currentOrderNumber: orderNumber,
-      cartActive: false,
+      customCartItems: [],
+      editingCustomCartKey: null,
       simpleCartItems: [],
       quantity: 1,
     }))
@@ -1623,7 +1738,7 @@ function ConfirmationScreen({ order, onNavigate, onViewOrder }: { order?: OrderR
       </div>
       <h1 style={{ fontSize: 30, fontWeight: 700, color: INK, marginBottom: 12, letterSpacing: '-0.4px' }}>Order Confirmed</h1>
       <p style={{ fontSize: 15, color: MUTED, lineHeight: 1.7, marginBottom: 32, maxWidth: 440, margin: '0 auto 32px' }}>
-        {hasCustomizedItem ? "Your order was placed successfully. Elena Marsh will review the customized floral artwork request before work begins." : 'Your order was placed successfully and is ready to view in My Orders.'}
+        {hasCustomizedItem ? 'Your order was placed successfully. Each creator will review the customized artwork request before work begins.' : 'Your order was placed successfully and is ready to view in My Orders.'}
       </p>
 
       <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden', marginBottom: 40, textAlign: 'left' }}>
@@ -1724,15 +1839,17 @@ function StandardOrderStatusScreen({ order, onNavigate }: { order: OrderRecord; 
   )
 }
 
-function OrderStatusScreen({ order, onNavigate, onUpdateWorkflow }: { order?: OrderRecord; onNavigate: (s: Screen) => void; onUpdateWorkflow: (orderNumber: string, update: Partial<CustomWorkflow>) => void }) {
+function OrderStatusScreen({ order, onNavigate, onUpdateWorkflow }: { order?: OrderRecord; onNavigate: (s: Screen) => void; onUpdateWorkflow: (orderNumber: string, customizationKey: number, update: Partial<CustomWorkflow>) => void }) {
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [feedbackError, setFeedbackError] = useState('')
   const [clarificationResponse, setClarificationResponse] = useState('')
   const [clarificationUploads, setClarificationUploads] = useState<UploadedImage[]>([])
   const [clarificationError, setClarificationError] = useState('')
+  const [selectedCustomizationKey, setSelectedCustomizationKey] = useState<number | null>(null)
   const clarificationKeyRef = useRef(Date.now())
-  const customItem = order?.items.find((item) => item.customized && item.customization)
+  const customItems = order?.items.filter((item) => item.customized && item.customization) ?? []
+  const customItem = customItems.find((item) => (item.customizationKey ?? item.productId) === selectedCustomizationKey) ?? customItems[0]
 
   if (!order) {
     return (
@@ -1747,6 +1864,9 @@ function OrderStatusScreen({ order, onNavigate, onUpdateWorkflow }: { order?: Or
 
   const cfg = customItem.customization
   const workflow = getCustomWorkflow(customItem)
+  const creatorName = customItem.creator
+  const creatorImage = PRODUCT_DETAILS[customItem.productId]?.creatorImg ?? CREATOR_IMG
+  const workflowKey = customItem.customizationKey ?? customItem.productId
   const tone = getWorkflowTone(workflow.status)
   const stageIndex = workflow.status === 'shipped'
     ? 4
@@ -1761,7 +1881,7 @@ function OrderStatusScreen({ order, onNavigate, onUpdateWorkflow }: { order?: Or
       setFeedbackError('Please enter at least 10 characters so the requested change is clear.')
       return
     }
-    onUpdateWorkflow(order.orderNumber, { status: 'changes-requested', customerFeedback: feedback })
+    onUpdateWorkflow(order.orderNumber, workflowKey, { status: 'changes-requested', customerFeedback: feedback })
     setFeedbackOpen(false)
     setFeedbackError('')
   }
@@ -1784,7 +1904,7 @@ function OrderStatusScreen({ order, onNavigate, onUpdateWorkflow }: { order?: Or
       setClarificationError('Please enter at least 10 characters so your response is clear.')
       return
     }
-    onUpdateWorkflow(order.orderNumber, {
+    onUpdateWorkflow(order.orderNumber, workflowKey, {
       status: 'customer-response-sent',
       customerModificationResponse: response,
       customerModificationUploads: clarificationUploads,
@@ -1804,6 +1924,12 @@ function OrderStatusScreen({ order, onNavigate, onUpdateWorkflow }: { order?: Or
           </span>
         </div>
       </div>
+
+      {customItems.length > 1 && <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 24 }}>{customItems.map((item) => {
+        const itemKey = item.customizationKey ?? item.productId
+        const selected = itemKey === workflowKey
+        return <button key={itemKey} onClick={() => { setSelectedCustomizationKey(itemKey); setFeedbackOpen(false); setFeedback(''); setFeedbackError(''); setClarificationResponse(''); setClarificationUploads([]); setClarificationError('') }} style={{ border: `1px solid ${selected ? ACCENT : BORDER}`, borderRadius: 6, background: selected ? '#e8f0ec' : '#fff', color: selected ? ACCENT : MUTED, padding: '9px 14px', fontSize: 12, fontWeight: selected ? 600 : 500, cursor: 'pointer' }}>{item.title}</button>
+      })}</div>}
 
       {/* Stepper */}
       <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '28px 32px', marginBottom: 32 }}>
@@ -1832,17 +1958,17 @@ function OrderStatusScreen({ order, onNavigate, onUpdateWorkflow }: { order?: Or
           {workflow.status === 'pending-creator-review' && (
             <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px', background: '#fff' }}>
               <h3 style={{ fontSize: 15, fontWeight: 600, color: INK, marginBottom: 12 }}>Pending Creator Review</h3>
-              <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: 0 }}>Your customized request has been received. Elena Marsh has not accepted it yet.</p>
+              <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: 0 }}>Your customized request has been received. {creatorName} has not accepted it yet.</p>
             </div>
           )}
 
           {workflow.status === 'modification-requested' && (
             <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px', background: '#fff' }}>
               <h3 style={{ fontSize: 15, fontWeight: 600, color: INK, marginBottom: 12 }}>Creator requested additional information</h3>
-              <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: '0 0 18px' }}>Elena Marsh needs more information before accepting this customized artwork request.</p>
-              {workflow.creatorModificationNote && <div style={{ background: SURFACE, borderRadius: 6, padding: '14px 16px', fontSize: 14, color: INK, lineHeight: 1.65, marginBottom: 20 }}><strong>Elena's request:</strong> {workflow.creatorModificationNote}</div>}
+              <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: '0 0 18px' }}>{creatorName} needs more information before accepting this customized artwork request.</p>
+              {workflow.creatorModificationNote && <div style={{ background: SURFACE, borderRadius: 6, padding: '14px 16px', fontSize: 14, color: INK, lineHeight: 1.65, marginBottom: 20 }}><strong>{creatorName}'s request:</strong> {workflow.creatorModificationNote}</div>}
               <div style={{ fontSize: 14, fontWeight: 600, color: INK, marginBottom: 8 }}>Your response</div>
-              <textarea value={clarificationResponse} onChange={(event) => { setClarificationResponse(event.target.value); setClarificationError('') }} rows={5} placeholder="Add the details Elena needs to review your request." style={{ width: '100%', boxSizing: 'border-box', border: `1px solid ${clarificationError ? ERROR : BORDER}`, borderRadius: 6, padding: '11px 12px', fontFamily: 'Inter, sans-serif', fontSize: 14, color: INK, lineHeight: 1.6, resize: 'vertical' }} />
+              <textarea value={clarificationResponse} onChange={(event) => { setClarificationResponse(event.target.value); setClarificationError('') }} rows={5} placeholder={`Add the details ${creatorName} needs to review your request.`} style={{ width: '100%', boxSizing: 'border-box', border: `1px solid ${clarificationError ? ERROR : BORDER}`, borderRadius: 6, padding: '11px 12px', fontFamily: 'Inter, sans-serif', fontSize: 14, color: INK, lineHeight: 1.6, resize: 'vertical' }} />
               {clarificationError && <div style={{ color: ERROR, fontSize: 12, marginTop: 6 }}>{clarificationError}</div>}
               <div style={{ marginTop: 16 }}>
                 <label style={{ display: 'inline-flex', alignItems: 'center', border: `1px solid ${BORDER}`, borderRadius: 6, padding: '8px 14px', fontSize: 13, color: INK, cursor: 'pointer', background: '#fff' }}>Add supporting images<input type="file" accept="image/*" multiple onChange={handleClarificationFiles} style={{ display: 'none' }} /></label>
@@ -1856,8 +1982,8 @@ function OrderStatusScreen({ order, onNavigate, onUpdateWorkflow }: { order?: Or
           {workflow.status === 'customer-response-sent' && (
             <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px', background: '#fff' }}>
               <h3 style={{ fontSize: 15, fontWeight: 600, color: INK, marginBottom: 10 }}>Response Sent</h3>
-              <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: '0 0 18px' }}>Elena has received your additional information. Your request is now awaiting creator review.</p>
-              {workflow.creatorModificationNote && <div style={{ background: SURFACE, borderRadius: 6, padding: '14px 16px', fontSize: 14, color: INK, lineHeight: 1.65, marginBottom: 12 }}><strong>Elena's request:</strong> {workflow.creatorModificationNote}</div>}
+              <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: '0 0 18px' }}>{creatorName} has received your additional information. Your request is now awaiting creator review.</p>
+              {workflow.creatorModificationNote && <div style={{ background: SURFACE, borderRadius: 6, padding: '14px 16px', fontSize: 14, color: INK, lineHeight: 1.65, marginBottom: 12 }}><strong>{creatorName}'s request:</strong> {workflow.creatorModificationNote}</div>}
               <div style={{ border: `1px solid ${BORDER}`, borderRadius: 6, padding: '14px 16px', fontSize: 14, color: INK, lineHeight: 1.65 }}><strong>Your response:</strong> {workflow.customerModificationResponse}</div>
               {Boolean(workflow.customerModificationUploads?.length) && <div style={{ marginTop: 18 }}><div style={{ fontSize: 12, fontWeight: 600, color: INK, marginBottom: 10 }}>Supplemental images</div><div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>{workflow.customerModificationUploads?.map((upload, index) => <img key={upload.key} src={upload.src} alt={`Supplemental reference ${index + 1}`} style={{ width: 104, height: 104, objectFit: 'cover', borderRadius: 6, border: `1px solid ${BORDER}` }} />)}</div></div>}
             </div>
@@ -1866,7 +1992,7 @@ function OrderStatusScreen({ order, onNavigate, onUpdateWorkflow }: { order?: Or
           {workflow.status === 'in-progress' && (
             <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px', background: '#fff' }}>
               <h3 style={{ fontSize: 15, fontWeight: 600, color: INK, marginBottom: 10 }}>Artwork in Progress</h3>
-              <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: 0 }}>Elena Marsh accepted your request and is working on the customized floral painting. A progress image will appear here after the creator submits an update.</p>
+              <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: 0 }}>{creatorName} accepted your request and is working on {customItem.title}. A progress image will appear here after the creator submits an update.</p>
             </div>
           )}
 
@@ -1874,15 +2000,15 @@ function OrderStatusScreen({ order, onNavigate, onUpdateWorkflow }: { order?: Or
             <>
               <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden', marginBottom: 24, background: '#fff' }}>
                 <div style={{ padding: '18px 24px', borderBottom: `1px solid ${BORDER}` }}><h3 style={{ fontSize: 14, fontWeight: 600, color: INK }}>Artwork Progress</h3></div>
-                {workflow.progressImage && <img src={workflow.progressImage} alt="Floral artwork progress submitted by Elena Marsh" style={{ width: '100%', height: 320, objectFit: 'cover', display: 'block' }} />}
+                {workflow.progressImage && <img src={workflow.progressImage} alt={`${customItem.title} progress submitted by ${creatorName}`} style={{ width: '100%', height: 320, objectFit: 'cover', display: 'block' }} />}
               </div>
               <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '20px 24px', marginBottom: 24, background: '#fff' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}><img src={CREATOR_IMG} alt="Elena Marsh" style={{ width: 40, height: 40, borderRadius: '50%', objectFit: 'cover' }} /><div><div style={{ fontSize: 14, fontWeight: 600, color: INK }}>Elena Marsh</div><div style={{ fontSize: 12, color: MUTED }}>Creator progress update</div></div></div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}><img src={creatorImage} alt={creatorName} style={{ width: 40, height: 40, borderRadius: '50%', objectFit: 'cover' }} /><div><div style={{ fontSize: 14, fontWeight: 600, color: INK }}>{creatorName}</div><div style={{ fontSize: 12, color: MUTED }}>Creator progress update</div></div></div>
                 <p style={{ fontSize: 14, color: INK, lineHeight: 1.7, margin: 0 }}>{workflow.progressNote}</p>
               </div>
               {!feedbackOpen ? (
                 <div style={{ display: 'flex', gap: 12 }}>
-                  <PrimaryBtn onClick={() => onUpdateWorkflow(order.orderNumber, { status: 'progress-approved' })}>Approve Progress</PrimaryBtn>
+                  <PrimaryBtn onClick={() => onUpdateWorkflow(order.orderNumber, workflowKey, { status: 'progress-approved' })}>Approve Progress</PrimaryBtn>
                   <SecondaryBtn onClick={() => setFeedbackOpen(true)}>Request Changes</SecondaryBtn>
                 </div>
               ) : (
@@ -1899,13 +2025,13 @@ function OrderStatusScreen({ order, onNavigate, onUpdateWorkflow }: { order?: Or
           {workflow.status === 'changes-requested' && (
             <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px', background: '#fff' }}>
               <h3 style={{ fontSize: 15, fontWeight: 600, color: INK, marginBottom: 10 }}>Changes Requested</h3>
-              <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: '0 0 16px' }}>Your feedback was sent. Elena Marsh is preparing an updated version.</p>
+              <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: '0 0 16px' }}>Your feedback was sent. {creatorName} is preparing an updated version.</p>
               <div style={{ background: SURFACE, borderRadius: 6, padding: '14px 16px', fontSize: 14, color: INK, lineHeight: 1.65 }}><strong>Your feedback:</strong> {workflow.customerFeedback}</div>
             </div>
           )}
 
-          {workflow.status === 'progress-approved' && <WorkflowMessage title="Progress Approved" body="Your approval has been recorded. Elena Marsh can complete the artwork; shipping is still pending." />}
-          {workflow.status === 'completed' && <WorkflowMessage title="Artwork Completed" body="Elena Marsh marked the artwork as complete. It is being prepared for shipment and tracking is pending." />}
+          {workflow.status === 'progress-approved' && <WorkflowMessage title="Progress Approved" body={`Your approval has been recorded. ${creatorName} can complete the artwork; shipping is still pending.`} />}
+          {workflow.status === 'completed' && <WorkflowMessage title="Artwork Completed" body={`${creatorName} marked the artwork as complete. It is being prepared for shipment and tracking is pending.`} />}
           {workflow.status === 'shipped' && (
             <div style={{ border: `1.5px solid ${ACCENT}`, borderRadius: 8, padding: '24px', background: '#f0f5f2' }}>
               <h3 style={{ fontSize: 15, fontWeight: 700, color: INK, marginBottom: 8 }}>Shipped</h3>
@@ -1916,7 +2042,7 @@ function OrderStatusScreen({ order, onNavigate, onUpdateWorkflow }: { order?: Or
 
           <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: '20px 24px', marginTop: 24, background: '#fff' }}>
             <h3 style={{ fontSize: 14, fontWeight: 600, color: INK, marginBottom: 14 }}>Your Configuration</h3>
-            {[['Size', cfg.size], ['Material', cfg.material], ['Frame', cfg.frame], ['Color palette', cfg.palette], ['Orientation', cfg.orientation], ['Reference images', String(cfg.uploads.length)]].map(([label, value]) => <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 8 }}><span style={{ color: MUTED }}>{label}</span><span style={{ fontWeight: 500 }}>{value}</span></div>)}
+            {[...getCustomizationRows(customItem.productId, cfg), ['Reference images', String(cfg.uploads.length)] as [string, string]].map(([label, value]) => <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 8 }}><span style={{ color: MUTED }}>{label}</span><span style={{ fontWeight: 500 }}>{value}</span></div>)}
             {cfg.instruction && <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 12, marginTop: 12, fontSize: 13, color: MUTED, lineHeight: 1.6 }}><strong style={{ color: INK }}>Instructions:</strong> {cfg.instruction}</div>}
           </div>
 
@@ -2240,7 +2366,7 @@ function WishlistScreen({ cfg, setCfg, onNavigate, onSelectProduct }: { cfg: App
     setCfg({ wishlist: cfg.wishlist.filter((w) => w !== id) })
 
   const handleAddToCart = (product: typeof PRODUCT_CARDS[0]) => {
-    if (product.id === 1) {
+    if (PRODUCT_DETAILS[product.id]?.isFullFlow) {
       onSelectProduct(product.id)
       onNavigate('product')
       return
@@ -2253,7 +2379,7 @@ function WishlistScreen({ cfg, setCfg, onNavigate, onSelectProduct }: { cfg: App
   }
 
   const inCart = (id: number) =>
-    (id === 1 && cfg.cartActive) || cfg.simpleCartItems.some((i) => i.productId === id)
+    cfg.customCartItems.some((item) => item.productId === id) || cfg.simpleCartItems.some((item) => item.productId === id)
 
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto', padding: '48px 40px 80px' }}>
@@ -2305,7 +2431,7 @@ function WishlistScreen({ cfg, setCfg, onNavigate, onSelectProduct }: { cfg: App
                     <div style={{ fontSize: 13, color: MUTED, marginBottom: 16 }}>by {product.creator}</div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                       <PrimaryBtn small onClick={() => handleAddToCart(product)}>
-                        {product.id === 1
+                        {detail.isFullFlow
                           ? 'Customize & Add to Cart'
                           : added ? '✓ In Cart' : 'Add to Cart'}
                       </PrimaryBtn>
@@ -2343,8 +2469,9 @@ function WorkflowBadge({ status, label }: { status: CustomWorkflowStatus; label?
   return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: tone.bg, color: tone.color, border: `1px solid ${tone.border}`, borderRadius: 20, padding: '3px 10px', fontSize: 11, fontWeight: 600 }}><span style={{ width: 5, height: 5, borderRadius: '50%', background: tone.color }} />{label ?? WORKFLOW_LABELS[status]}</span>
 }
 
-function CreatorDashboardScreen({ orders, onOpenTask }: { orders: OrderRecord[]; onOpenTask: (orderNumber: string, target: 'creator-request' | 'creator-order') => void }) {
-  const tasks = getElenaTasks(orders)
+function CreatorDashboardScreen({ orders, creatorName, onOpenTask }: { orders: OrderRecord[]; creatorName: string; onOpenTask: (orderNumber: string, customizationKey: number, target: 'creator-request' | 'creator-order') => void }) {
+  const tasks = getCreatorTasks(orders, creatorName)
+  const creator = CREATORS.find((candidate) => candidate.name === creatorName) ?? CREATORS[0]
   const incoming = tasks.filter(({ item }) => INCOMING_WORKFLOW_STATUSES.includes(getCustomWorkflow(item).status))
   const active = tasks.filter(({ item }) => ACTIVE_WORKFLOW_STATUSES.includes(getCustomWorkflow(item).status))
   const activeCount = active.filter(({ item }) => getCustomWorkflow(item).status !== 'shipped').length
@@ -2353,37 +2480,38 @@ function CreatorDashboardScreen({ orders, onOpenTask }: { orders: OrderRecord[];
   return (
     <div style={{ maxWidth: 1050, margin: '0 auto', padding: '48px 40px 80px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 34 }}>
-        <img src={CREATOR_IMG} alt="Elena Marsh" style={{ width: 60, height: 60, borderRadius: '50%', objectFit: 'cover', border: `2px solid ${BORDER}` }} />
-        <div><div style={{ fontSize: 12, color: ACCENT, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Creator Dashboard</div><h1 style={{ fontSize: 28, color: INK, margin: '3px 0' }}>Elena Marsh</h1><div style={{ fontSize: 13, color: MUTED }}>Creator · Floral Painting</div></div>
+        <img src={creator.avatar} alt={creator.name} style={{ width: 60, height: 60, borderRadius: '50%', objectFit: 'cover', border: `2px solid ${BORDER}` }} />
+        <div><div style={{ fontSize: 12, color: ACCENT, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Creator Dashboard</div><h1 style={{ fontSize: 28, color: INK, margin: '3px 0' }}>{creator.name}</h1><div style={{ fontSize: 13, color: MUTED }}>Creator · {creator.specialty}</div></div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 42 }}>
         {[['Incoming Requests', incoming.length], ['Active Orders', activeCount], ['Awaiting Customer Review', awaitingCount]].map(([label, value]) => <div key={String(label)} style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '18px 20px' }}><div style={{ fontSize: 24, fontWeight: 700, color: INK, marginBottom: 4 }}>{value}</div><div style={{ fontSize: 12, color: MUTED }}>{label}</div></div>)}
       </div>
 
-      <CreatorTaskSection title="Incoming Requests" empty="No incoming customized requests." tasks={incoming} actionLabel="View Request" onOpen={(number) => onOpenTask(number, 'creator-request')} />
-      <div style={{ marginTop: 40 }}><CreatorTaskSection title="Active Orders" empty="No active customized orders." tasks={active} actionLabel="Open Order" onOpen={(number) => onOpenTask(number, 'creator-order')} /></div>
+      <CreatorTaskSection title="Incoming Requests" empty="No incoming customized requests." tasks={incoming} actionLabel="View Request" onOpen={(number, key) => onOpenTask(number, key, 'creator-request')} />
+      <div style={{ marginTop: 40 }}><CreatorTaskSection title="Active Orders" empty="No active customized orders." tasks={active} actionLabel="Open Order" onOpen={(number, key) => onOpenTask(number, key, 'creator-order')} /></div>
     </div>
   )
 }
 
-function CreatorTaskSection({ title, empty, tasks, actionLabel, onOpen }: { title: string; empty: string; tasks: CreatorTask[]; actionLabel: string; onOpen: (orderNumber: string) => void }) {
+function CreatorTaskSection({ title, empty, tasks, actionLabel, onOpen }: { title: string; empty: string; tasks: CreatorTask[]; actionLabel: string; onOpen: (orderNumber: string, customizationKey: number) => void }) {
   return (
     <section>
       <h2 style={{ fontSize: 18, color: INK, marginBottom: 16 }}>{title}</h2>
       {tasks.length === 0 ? <div style={{ background: '#fff', border: `1px dashed ${BORDER}`, borderRadius: 8, padding: '30px 24px', color: MUTED, fontSize: 14 }}>{empty}</div> : <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>{tasks.slice().reverse().map(({ order, item }) => {
         const workflow = getCustomWorkflow(item)
-        return <div key={`${order.orderNumber}-${item.productId}`} style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '20px 22px', display: 'flex', alignItems: 'center', gap: 18 }}>
+        const customizationKey = item.customizationKey ?? item.productId
+        return <div key={`${order.orderNumber}-${customizationKey}`} style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '20px 22px', display: 'flex', alignItems: 'center', gap: 18 }}>
           <img src={item.image} alt={item.title} style={{ width: 56, height: 68, objectFit: 'cover', borderRadius: 5 }} />
           <div style={{ flex: 1 }}><div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 5, flexWrap: 'wrap' }}><strong style={{ fontSize: 14, color: INK }}>{item.title}</strong><WorkflowBadge status={workflow.status} label={workflow.status === 'customer-response-sent' ? 'Customer Responded' : undefined} /></div><div style={{ fontSize: 12, color: MUTED, marginBottom: 3 }}>{order.orderNumber} · {order.checkout.name || 'Test User'} · {order.placedLabel}</div><div style={{ fontSize: 12, color: MUTED }}>{getCustomizationLabel(item)}</div></div>
-          <PrimaryBtn small onClick={() => onOpen(order.orderNumber)}>{actionLabel}</PrimaryBtn>
+          <PrimaryBtn small onClick={() => onOpen(order.orderNumber, customizationKey)}>{actionLabel}</PrimaryBtn>
         </div>
       })}</div>}
     </section>
   )
 }
 
-function CreatorRequestScreen({ task, onNavigate, onUpdateWorkflow }: { task?: CreatorTask; onNavigate: (s: Screen) => void; onUpdateWorkflow: (orderNumber: string, update: Partial<CustomWorkflow>) => void }) {
+function CreatorRequestScreen({ task, onNavigate, onUpdateWorkflow }: { task?: CreatorTask; onNavigate: (s: Screen) => void; onUpdateWorkflow: (orderNumber: string, customizationKey: number, update: Partial<CustomWorkflow>) => void }) {
   const [showModification, setShowModification] = useState(false)
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
@@ -2391,10 +2519,11 @@ function CreatorRequestScreen({ task, onNavigate, onUpdateWorkflow }: { task?: C
   const { order, item } = task
   const custom = item.customization!
   const workflow = getCustomWorkflow(item)
+  const customizationKey = item.customizationKey ?? item.productId
 
   const requestModification = () => {
     if (note.trim().length < 10) { setError('Please enter at least 10 characters so the customer knows what is needed.'); return }
-    onUpdateWorkflow(order.orderNumber, { status: 'modification-requested', creatorModificationNote: note.trim(), customerModificationResponse: undefined, customerModificationUploads: undefined })
+    onUpdateWorkflow(order.orderNumber, customizationKey, { status: 'modification-requested', creatorModificationNote: note.trim(), customerModificationResponse: undefined, customerModificationUploads: undefined })
     setShowModification(false)
     setError('')
   }
@@ -2405,7 +2534,7 @@ function CreatorRequestScreen({ task, onNavigate, onUpdateWorkflow }: { task?: C
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 32 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '22px 24px' }}><h3 style={{ fontSize: 14, color: INK, marginBottom: 16 }}>Customer & Order</h3>{[['Customer', order.checkout.name || 'Test User'], ['Email', order.checkout.email], ['Placed', order.placedLabel], ['Delivery', order.delivery === 'express' ? 'Express Delivery' : 'Standard Delivery'], ['Quantity', String(item.quantity)], ['Item price', `€${item.unitPrice * item.quantity}`]].map(([label, value]) => <DetailRow key={label} label={label} value={value} />)}</div>
-          <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '22px 24px' }}><h3 style={{ fontSize: 14, color: INK, marginBottom: 16 }}>Customization</h3>{[['Size', custom.size], ['Material', custom.material], ['Frame', custom.frame], ['Color palette', custom.palette], ['Orientation', custom.orientation]].map(([label, value]) => <DetailRow key={label} label={label} value={value} />)}</div>
+          <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '22px 24px' }}><h3 style={{ fontSize: 14, color: INK, marginBottom: 16 }}>Customization</h3>{getCustomizationRows(item.productId, custom).map(([label, value]) => <DetailRow key={label} label={label} value={value} />)}</div>
           <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '22px 24px' }}><h3 style={{ fontSize: 14, color: INK, marginBottom: 14 }}>Reference Images</h3><div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>{custom.uploads.map((upload, index) => <div key={upload.key}><img src={upload.src} alt={`Customer reference ${index + 1}`} style={{ width: 116, height: 116, objectFit: 'cover', borderRadius: 6, border: `1px solid ${BORDER}` }} /><div style={{ fontSize: 11, color: MUTED, marginTop: 4, maxWidth: 116, overflow: 'hidden', textOverflow: 'ellipsis' }}>{upload.name}</div></div>)}</div></div>
           <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '22px 24px' }}><h3 style={{ fontSize: 14, color: INK, marginBottom: 10 }}>Customer Instructions</h3><p style={{ fontSize: 14, color: MUTED, lineHeight: 1.7, margin: 0 }}>{custom.instruction || 'No additional instructions.'}</p></div>
           {workflow.status === 'customer-response-sent' && <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '22px 24px' }}><h3 style={{ fontSize: 14, color: INK, marginBottom: 16 }}>Clarification Exchange</h3><div style={{ marginBottom: 16 }}><div style={{ fontSize: 12, fontWeight: 600, color: MUTED, marginBottom: 6 }}>Your clarification request</div><p style={{ fontSize: 14, color: INK, lineHeight: 1.7, margin: 0 }}>{workflow.creatorModificationNote}</p></div><div><div style={{ fontSize: 12, fontWeight: 600, color: MUTED, marginBottom: 6 }}>Customer response</div><p style={{ fontSize: 14, color: INK, lineHeight: 1.7, margin: 0 }}>{workflow.customerModificationResponse}</p></div>{Boolean(workflow.customerModificationUploads?.length) && <div style={{ marginTop: 18 }}><div style={{ fontSize: 12, fontWeight: 600, color: MUTED, marginBottom: 10 }}>Supplemental images</div><div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>{workflow.customerModificationUploads?.map((upload, index) => <div key={upload.key}><img src={upload.src} alt={`Customer supplemental reference ${index + 1}`} style={{ width: 116, height: 116, objectFit: 'cover', borderRadius: 6, border: `1px solid ${BORDER}` }} /><div style={{ fontSize: 11, color: MUTED, marginTop: 4, maxWidth: 116, overflow: 'hidden', textOverflow: 'ellipsis' }}>{upload.name}</div></div>)}</div></div>}</div>}
@@ -2413,7 +2542,7 @@ function CreatorRequestScreen({ task, onNavigate, onUpdateWorkflow }: { task?: C
         <div>
           <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '22px', position: 'sticky', top: 96 }}><img src={item.image} alt={item.title} style={{ width: '100%', height: 190, objectFit: 'cover', borderRadius: 6, marginBottom: 16 }} /><div style={{ fontSize: 15, fontWeight: 600, color: INK, marginBottom: 4 }}>{item.title}</div><div style={{ fontSize: 12, color: MUTED, marginBottom: 20 }}>{getCustomizationLabel(item)}</div>
             {workflow.creatorModificationNote && <div style={{ background: '#fef8e7', border: '1px solid #e8d98a', borderRadius: 6, padding: '12px', fontSize: 12, color: INK, lineHeight: 1.6, marginBottom: 16 }}><strong>Requested modification:</strong> {workflow.creatorModificationNote}</div>}
-            <PrimaryBtn fullWidth onClick={() => { onUpdateWorkflow(order.orderNumber, { status: 'in-progress' }); onNavigate('creator-order') }}>Accept Request</PrimaryBtn>
+            <PrimaryBtn fullWidth onClick={() => { onUpdateWorkflow(order.orderNumber, customizationKey, { status: 'in-progress' }); onNavigate('creator-order') }}>Accept Request</PrimaryBtn>
             <div style={{ marginTop: 10 }}><SecondaryBtn fullWidth onClick={() => setShowModification(true)}>Request Modification</SecondaryBtn></div>
           </div>
         </div>
@@ -2427,7 +2556,7 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   return <div style={{ display: 'flex', justifyContent: 'space-between', gap: 18, fontSize: 13, marginBottom: 9 }}><span style={{ color: MUTED }}>{label}</span><span style={{ color: INK, fontWeight: 500, textAlign: 'right' }}>{value}</span></div>
 }
 
-function CreatorOrderScreen({ task, onNavigate, onUpdateWorkflow }: { task?: CreatorTask; onNavigate: (s: Screen) => void; onUpdateWorkflow: (orderNumber: string, update: Partial<CustomWorkflow>) => void }) {
+function CreatorOrderScreen({ task, onNavigate, onUpdateWorkflow }: { task?: CreatorTask; onNavigate: (s: Screen) => void; onUpdateWorkflow: (orderNumber: string, customizationKey: number, update: Partial<CustomWorkflow>) => void }) {
   const item = task?.item
   const order = task?.order
   const workflow = item ? getCustomWorkflow(item) : undefined
@@ -2439,6 +2568,7 @@ function CreatorOrderScreen({ task, onNavigate, onUpdateWorkflow }: { task?: Cre
   const [trackingNumber, setTrackingNumber] = useState(workflow?.trackingNumber ?? '')
   const [shippingError, setShippingError] = useState('')
   if (!item?.customization || !order || !workflow) return <CreatorMissingState onNavigate={onNavigate} />
+  const customizationKey = item.customizationKey ?? item.productId
 
   const handleProgressFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -2450,12 +2580,12 @@ function CreatorOrderScreen({ task, onNavigate, onUpdateWorkflow }: { task?: Cre
   const submitProgress = () => {
     if (!progressImage) { setProgressError('Add a progress image before submitting.'); return }
     if (progressNote.trim().length < 10) { setProgressError('Enter a progress note of at least 10 characters.'); return }
-    onUpdateWorkflow(order.orderNumber, { status: 'awaiting-customer-review', progressImage, progressImageName, progressNote })
+    onUpdateWorkflow(order.orderNumber, customizationKey, { status: 'awaiting-customer-review', progressImage, progressImageName, progressNote })
     setProgressError('')
   }
   const markShipped = () => {
     if (!carrier.trim() || !trackingNumber.trim()) { setShippingError('Carrier and tracking number are both required.'); return }
-    onUpdateWorkflow(order.orderNumber, { status: 'shipped', carrier, trackingNumber })
+    onUpdateWorkflow(order.orderNumber, customizationKey, { status: 'shipped', carrier, trackingNumber })
     setShippingError('')
   }
 
@@ -2467,14 +2597,14 @@ function CreatorOrderScreen({ task, onNavigate, onUpdateWorkflow }: { task?: Cre
         <div>
           {workflow.status === 'changes-requested' && <div style={{ background: '#fdf0ef', border: '1px solid #e8b4b0', borderRadius: 8, padding: '20px 22px', marginBottom: 20 }}><h3 style={{ fontSize: 15, color: ERROR, marginBottom: 8 }}>Changes Requested</h3><p style={{ fontSize: 14, color: INK, lineHeight: 1.65, margin: 0 }}>{workflow.customerFeedback}</p></div>}
           {canSubmitProgress && <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px' }}><h3 style={{ fontSize: 16, color: INK, marginBottom: 18 }}>{workflow.status === 'changes-requested' ? 'Submit Revised Progress' : 'Progress Update'}</h3>
-            {progressImage && <img src={progressImage} alt="Selected floral artwork progress" style={{ width: '100%', height: 280, objectFit: 'cover', borderRadius: 6, marginBottom: 14 }} />}
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}><label style={{ display: 'inline-flex', alignItems: 'center', border: `1px solid ${BORDER}`, borderRadius: 6, padding: '8px 14px', fontSize: 13, color: INK, cursor: 'pointer', background: '#fff' }}>Upload Progress Image<input type="file" accept="image/*" onChange={handleProgressFile} style={{ display: 'none' }} /></label><SecondaryBtn small onClick={() => { setProgressImage(PROGRESS_IMG); setProgressImageName('floral-painting-progress.png'); setProgressError('') }}>Use Sample Progress Image</SecondaryBtn></div>
+            {progressImage && <img src={progressImage} alt={`Selected ${item.title} progress`} style={{ width: '100%', height: 280, objectFit: 'cover', borderRadius: 6, marginBottom: 14 }} />}
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}><label style={{ display: 'inline-flex', alignItems: 'center', border: `1px solid ${BORDER}`, borderRadius: 6, padding: '8px 14px', fontSize: 13, color: INK, cursor: 'pointer', background: '#fff' }}>Upload Progress Image<input type="file" accept="image/*" onChange={handleProgressFile} style={{ display: 'none' }} /></label>{item.productId === 1 && <SecondaryBtn small onClick={() => { setProgressImage(PROGRESS_IMG); setProgressImageName('floral-painting-progress.png'); setProgressError('') }}>Use Sample Progress Image</SecondaryBtn>}</div>
             {progressImageName && <div style={{ fontSize: 12, color: MUTED, marginBottom: 12 }}>Selected: {progressImageName}</div>}
             <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: INK, marginBottom: 6 }}>Progress Note</label><textarea value={progressNote} onChange={(e) => { setProgressNote(e.target.value); setProgressError('') }} rows={5} placeholder="Describe the current progress and what you would like the customer to review." style={{ width: '100%', boxSizing: 'border-box', border: `1px solid ${progressError ? ERROR : BORDER}`, borderRadius: 6, padding: 12, fontFamily: 'Inter, sans-serif', fontSize: 14, resize: 'vertical' }} />{progressError && <div style={{ fontSize: 12, color: ERROR, marginTop: 5 }}>{progressError}</div>}<div style={{ marginTop: 16 }}><PrimaryBtn onClick={submitProgress}>Submit for Customer Review</PrimaryBtn></div>
           </div>}
 
           {workflow.status === 'awaiting-customer-review' && <WorkflowMessage title="Awaiting Customer Review" body="The saved progress image and note are now visible to the customer." />}
-          {workflow.status === 'progress-approved' && <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px' }}><WorkflowMessage title="Progress Approved" body="The customer approved this progress update. You can now complete the artwork." /><div style={{ marginTop: 18 }}><PrimaryBtn onClick={() => onUpdateWorkflow(order.orderNumber, { status: 'completed' })}>Mark Artwork as Completed</PrimaryBtn></div></div>}
+          {workflow.status === 'progress-approved' && <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px' }}><WorkflowMessage title="Progress Approved" body="The customer approved this progress update. You can now complete the artwork." /><div style={{ marginTop: 18 }}><PrimaryBtn onClick={() => onUpdateWorkflow(order.orderNumber, customizationKey, { status: 'completed' })}>Mark Artwork as Completed</PrimaryBtn></div></div>}
           {workflow.status === 'completed' && <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px' }}><h3 style={{ fontSize: 16, color: INK, marginBottom: 8 }}>Artwork Completed</h3><p style={{ fontSize: 14, color: MUTED, margin: '0 0 20px' }}>Add shipment details when the artwork is dispatched.</p><label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Carrier</label><input value={carrier} onChange={(e) => { setCarrier(e.target.value); setShippingError('') }} placeholder="e.g. DHL Express" style={{ width: '100%', boxSizing: 'border-box', border: `1px solid ${BORDER}`, borderRadius: 6, padding: 11, fontSize: 14, marginBottom: 14 }} /><label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Tracking Number</label><input value={trackingNumber} onChange={(e) => { setTrackingNumber(e.target.value); setShippingError('') }} placeholder="Enter tracking number" style={{ width: '100%', boxSizing: 'border-box', border: `1px solid ${BORDER}`, borderRadius: 6, padding: 11, fontSize: 14 }} />{shippingError && <div style={{ fontSize: 12, color: ERROR, marginTop: 6 }}>{shippingError}</div>}<div style={{ marginTop: 18 }}><PrimaryBtn onClick={markShipped}>Mark as Shipped</PrimaryBtn></div></div>}
           {workflow.status === 'shipped' && <div style={{ background: '#f0f5f2', border: `1px solid #b2d0c4`, borderRadius: 8, padding: '24px' }}><h3 style={{ fontSize: 16, color: INK, marginBottom: 14 }}>Shipment Recorded</h3><DetailRow label="Carrier" value={workflow.carrier ?? ''} /><DetailRow label="Tracking number" value={workflow.trackingNumber ?? ''} /></div>}
           {INCOMING_WORKFLOW_STATUSES.includes(workflow.status) && <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '24px' }}><p style={{ fontSize: 14, color: MUTED, margin: '0 0 16px' }}>This request has not been accepted yet.</p><PrimaryBtn onClick={() => onNavigate('creator-request')}>View Request Details</PrimaryBtn></div>}
@@ -2494,6 +2624,8 @@ function CreatorMissingState({ onNavigate }: { onNavigate: (s: Screen) => void }
 const PROTOTYPE_ACCOUNTS: Array<SessionUser & { password: string }> = [
   { role: 'customer', name: 'Test User', email: 'test@artian.com', password: '1234' },
   { role: 'creator', name: 'Elena Marsh', email: 'elena@artian.com', password: '1234' },
+  { role: 'creator', name: 'Marcus Bell', email: 'marcus@artian.com', password: '1234' },
+  { role: 'creator', name: 'Clara Roth', email: 'clara@artian.com', password: '1234' },
 ]
 
 function LoginScreen({ onLogin, onCancel, context }: { onLogin: (user: SessionUser) => void; onCancel: () => void; context: LoginIntent }) {
@@ -2562,6 +2694,7 @@ function LoginScreen({ onLogin, onCancel, context }: { onLogin: (user: SessionUs
           <div style={{ fontSize: 11, fontWeight: 600, color: MUTED, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: 6 }}>Prototype credentials</div>
           <div style={{ fontSize: 13, color: INK, marginBottom: 5 }}><strong>Customer:</strong> <span style={{ fontFamily: 'monospace', color: ACCENT }}>test@artian.com / 1234</span></div>
           <div style={{ fontSize: 13, color: INK }}><strong>Creator:</strong> <span style={{ fontFamily: 'monospace', color: ACCENT }}>elena@artian.com / 1234</span></div>
+          <div style={{ fontSize: 12, color: MUTED, marginTop: 6 }}>Portrait and pet creators use marcus@artian.com or clara@artian.com with the same password.</div>
         </div>
 
         <div style={{ textAlign: 'center', marginTop: 20 }}>
@@ -2642,6 +2775,7 @@ export default function App() {
   const [cfg, setCfgState] = useState<AppConfig>(DEFAULT_CONFIG)
   const [session, setSession] = useState<SessionUser | null>(null)
   const [loginIntent, setLoginIntent] = useState<LoginIntent>(null)
+  const [creatorTaskKey, setCreatorTaskKey] = useState<number | null>(null)
 
   const setCfg: SetAppConfig = (update) =>
     setCfgState((prev) => ({ ...prev, ...(typeof update === 'function' ? update(prev) : update) }))
@@ -2702,24 +2836,24 @@ export default function App() {
     navigate('order-status')
   }
 
-  const updateWorkflow = (orderNumber: string, update: Partial<CustomWorkflow>) => {
+  const updateWorkflow = (orderNumber: string, customizationKey: number, update: Partial<CustomWorkflow>) => {
     setCfgState((prev) => ({
       ...prev,
       orders: prev.orders.map((order) => order.orderNumber !== orderNumber ? order : {
         ...order,
-        items: order.items.map((item) => isElenaCustomizedItem(item) ? { ...item, workflow: { ...getCustomWorkflow(item), ...update } } : item),
+        items: order.items.map((item) => isCustomizedItem(item) && (item.customizationKey ?? item.productId) === customizationKey ? { ...item, workflow: { ...getCustomWorkflow(item), ...update } } : item),
       }),
     }))
   }
 
-  const openCreatorTask = (orderNumber: string, target: 'creator-request' | 'creator-order') => {
+  const openCreatorTask = (orderNumber: string, customizationKey: number, target: 'creator-request' | 'creator-order') => {
     setCfg({ currentOrderNumber: orderNumber })
+    setCreatorTaskKey(customizationKey)
     navigate(target)
   }
 
-  const currentCreatorTask = currentOrder
-    ? getElenaTasks([currentOrder])[0]
-    : undefined
+  const currentCreatorTasks = currentOrder ? getCreatorTasks([currentOrder], session?.role === 'creator' ? session.name : undefined) : []
+  const currentCreatorTask = currentCreatorTasks.find(({ item }) => (item.customizationKey ?? item.productId) === creatorTaskKey) ?? currentCreatorTasks[0]
 
   const requireCustomer = () => {
     setLoginIntent('checkout')
@@ -2736,7 +2870,7 @@ export default function App() {
 
   return (
     <div style={{ minHeight: '100vh', background: PAGE_BG, color: INK }}>
-      <Header screen={screen} cartCount={(cfg.cartActive ? 1 : 0) + cfg.simpleCartItems.length} wishlistCount={cfg.wishlist.length} session={session} onLogout={handleLogout} onNavigate={navigate} />
+      <Header screen={screen} cartCount={cfg.customCartItems.length + cfg.simpleCartItems.length} wishlistCount={cfg.wishlist.length} session={session} onLogout={handleLogout} onNavigate={navigate} />
       {screen !== 'home' && history.length > 0 && <div style={{ maxWidth: 1200, margin: '0 auto', padding: '18px 40px 0' }}><button onClick={goBack} style={{ background: 'none', border: 'none', padding: 0, color: MUTED, fontSize: 13, cursor: 'pointer' }}>← Back</button></div>}
       {screen === 'home' && <HomeScreen onNavigate={navigate} onSelectProduct={(id) => setCfg({ selectedProductId: id })} />}
       {screen === 'browse' && <BrowseScreen onNavigate={navigate} onSelectProduct={(id) => setCfg({ selectedProductId: id })} />}
@@ -2753,7 +2887,7 @@ export default function App() {
       {screen === 'creators' && <CreatorsScreen onNavigate={navigate} onSelectProduct={(id) => setCfg({ selectedProductId: id })} />}
       {screen === 'login' && <LoginScreen onLogin={handleLogin} onCancel={cancelLogin} context={loginIntent} />}
       {screen === 'my-orders' && session?.role === 'customer' && <MyOrdersScreen orders={cfg.orders} onNavigate={navigate} onViewOrder={viewOrder} />}
-      {screen === 'creator-dashboard' && session?.role === 'creator' && <CreatorDashboardScreen orders={cfg.orders} onOpenTask={openCreatorTask} />}
+      {screen === 'creator-dashboard' && session?.role === 'creator' && <CreatorDashboardScreen orders={cfg.orders} creatorName={session.name} onOpenTask={openCreatorTask} />}
       {screen === 'creator-request' && session?.role === 'creator' && <CreatorRequestScreen key={currentOrder?.orderNumber} task={currentCreatorTask} onNavigate={navigate} onUpdateWorkflow={updateWorkflow} />}
       {screen === 'creator-order' && session?.role === 'creator' && <CreatorOrderScreen key={`${currentOrder?.orderNumber}-${currentCreatorTask ? getCustomWorkflow(currentCreatorTask.item).status : 'missing'}`} task={currentCreatorTask} onNavigate={navigate} onUpdateWorkflow={updateWorkflow} />}
     </div>
